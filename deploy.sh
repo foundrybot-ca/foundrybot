@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =====================================================================
-# Unified Deployer — Ubuntu 24.04 LTS (Noble)
+# Deploy.sh — Ubuntu 24.04 LTS (Noble) version
 # Targets: Proxmox • QEMU/KVM • AWS • Firecracker
 # Features: Darksite repo • Autoinstall • ZFS-on-root pivot • WireGuard
 #           Secure Boot (MOK autosign) • Master + Minion roles
