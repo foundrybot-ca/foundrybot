@@ -4,6 +4,9 @@
 # Targets: Proxmox • QEMU/KVM • AWS • Firecracker
 # Features: Darksite repo • Autoinstall • ZFS-on-root pivot • WireGuard
 #           Secure Boot (MOK autosign) • Master + Minion roles
+# 
+# This version of the script builds and deploys 5 servers to proxmox by default
+# its designed to be a "starter" template with a few examples
 # =====================================================================
 
 set -Eeuo pipefail
