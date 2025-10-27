@@ -5,8 +5,13 @@
 # Features: Darksite repo • Autoinstall • ZFS-on-root pivot • WireGuard
 #           Secure Boot (MOK autosign) • Master + Minion roles
 # 
-# This version of the script builds and deploys 5 servers to proxmox by default
-# its designed to be a "starter" template with a few examples
+# I've configured this version the script to build and deploy 5 servers to proxmox 
+# as a demo, its a poerful example of whats possible.
+# 
+# master, includes ansible, salt and semaphore
+# prometheus/grafana, basic monitoring
+# k8s, sample worker that can be mass deployed
+# storage, provides smb/iscsi lightweight storage backend
 # =====================================================================
 
 set -Eeuo pipefail
