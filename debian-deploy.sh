@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016,SC2155,SC2086
 
+# Test lab example script to deploy vm's and storage across both zfs and cpeh to proxmox
+
 set -euo pipefail
 
 # =========================
