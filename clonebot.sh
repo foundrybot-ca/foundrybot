@@ -191,7 +191,7 @@ INSTALL_PROFILE="${INSTALL_PROFILE:-server}"
 
 # Users & SSH keys
 USERS=(
-  "todd:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHV51Eelt8PwYreHhJJ4JJP3OMwrXswUShblYY10J+A/ todd@onyx"
+  "todd:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPTeqWqq0ahMQzCbkZRz6/OoVBRat0QXWJGDMy2FzfEh todd@onyx"
 )
 
 # Build AllowUsers
