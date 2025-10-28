@@ -36,7 +36,7 @@ VMNAME="${VMNAME:-server}"      # short base name; domain added below
 DOMAIN="${DOMAIN:-foundrybot.ca}"
 
 # Storage
-VM_STORAGE="${VM_STORAGE:-void}"   # ceph RBD id (void) or local-zfs or fireball
+VM_STORAGE="${VM_STORAGE:-void}"   # (ceph->void (nvme->local-zfs (rust>fireball
 ISO_STORAGE="${ISO_STORAGE:-local}"     # dir storage for ISO (usually 'local')
 
 # VM sizing
@@ -90,10 +90,10 @@ WG3_PORT="${WG3_PORT:-51823}"
 WG_ALLOWED_CIDR="${WG_ALLOWED_CIDR:-10.77.0.0/16,10.78.0.0/16,10.79.0.0/16,10.80.0.0/16}"
 
 # Optional master public keys (if not provided, we will try SSH to WG_MASTER_HOST to read /etc/wireguard/wg*.pub)
-WG0_MASTER_PUB="${WG0_MASTER_PUB:-iJAMOtdsNJIbXKKbuipajum35gOmq7DCpf+IaCcO1TM=}"
-WG1_MASTER_PUB="${WG1_MASTER_PUB:-KDvb1sePQUbW/AN1pmdyK7DrPkUmjZKaXu4UV8aOYQw=}"
-WG2_MASTER_PUB="${WG2_MASTER_PUB:-pvfsNFFWDF36mS72Ttn2enpEsoV0mwfWEs9GJTtQBy4=}"
-WG3_MASTER_PUB="${WG3_MASTER_PUB:-QCXVMNWiQn4JzCgohkLQnL96Yqo+xbRHpZhkEL6fR2U=}"
+WG0_MASTER_PUB="${WG0_MASTER_PUB:-}"
+WG1_MASTER_PUB="${WG1_MASTER_PUB:-}"
+WG2_MASTER_PUB="${WG2_MASTER_PUB:-}"
+WG3_MASTER_PUB="${WG3_MASTER_PUB:-}"
 
 # SSH options for Proxmox and (optional) master pubkey fetch
 SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=8 -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
