@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016,SC2155,SC2086
-
-# Test lab example script to deploy vm's and storage across both zfs and cpeh to proxmox
-
+# Unified multi-target deployer:
+# - Proxmox cluster (master + 4 minions, 4x WireGuard planes, Salt/Prom/Grafana)
+# - AWS (AMI bake / run) with darksite bootstrap
+# - Firecracker (debootstrap rootfs + runner)
 set -euo pipefail
 
-# =========================
-# DRIVER MODE & GLOBAL CONFIG
-# =========================
+# ============================ DRIVER MODE ================================
+TARGET="${TARGET:-proxmox-cluster}"   # proxmox-cluster | aws-ami | aws-run | firecracker
 
-TARGET="${TARGET:-proxmox-cluster}"   # proxmox-cluster | proxmox-clones | aws-ami | aws-run | firecracker
-INPUT="${INPUT:-1}"                   # 1|fiend, 2|dragon, 3|lion
+# ============================ GLOBAL CONFIG =============================
+INPUT="${INPUT:-1}"   # 1|fiend, 2|dragon, 3|lion
 DOMAIN="${DOMAIN:-unixbox.net}"
 
 case "$INPUT" in
@@ -20,35 +19,22 @@ case "$INPUT" in
   *) echo "[ERROR] Unknown INPUT=$INPUT" >&2; exit 1 ;;
 esac
 
-# ---- Proxmox storage knobs ----
-# ISO_STORAGE / VM_STORAGE refer to Proxmox storage IDs.
-#  - local directory:         ISO_STORAGE=local          VM_STORAGE=local
-#  - ZFS pool (common):       ISO_STORAGE=local          VM_STORAGE=local-zfs
-#  - ZFS pool (custom name):  VM_STORAGE=zpool-vmdata
-#  - Ceph/RBD (default pool): VM_STORAGE=void
-#  - Ceph/RBD (custom pool):  VM_STORAGE=void-vm
-
-ISO_ORIG="${ISO_ORIG:-/var/lib/libvirt/boot/debian-13.1.0-amd64-netinst.iso}"
+ISO_ORIG="${ISO_ORIG:-/root/debian-13.0.0-amd64-DVD-1.iso}"
 ISO_STORAGE="${ISO_STORAGE:-local}"
 VM_STORAGE="${VM_STORAGE:-local-zfs}"
 
-# ---- Optional: Ceph/ZFS tuning for disks ----
-# CEPH_RBD_FEATURES can be set on the storage definition in Proxmox GUI; this script uses storage ID only.
-# ZFS THIN vs THICK: Proxmox 'scsi0 ${VM_STORAGE}:${SIZE}' honors storage config (thin on ZFS by default).
-# To attach disks to specific ZFS datasets/pools, ensure the storage ID maps to that pool/dataset.
-
-# ===== Master VM (ISO flow) =====
-MASTER_ID="${MASTER_ID:-7010}"; MASTER_NAME="${MASTER_NAME:-master}"
+# ===== Master VM =====
+MASTER_ID="${MASTER_ID:-4010}"; MASTER_NAME="${MASTER_NAME:-master}"
 MASTER_LAN="${MASTER_LAN:-10.100.10.224}"
 NETMASK="${NETMASK:-255.255.255.0}"
 GATEWAY="${GATEWAY:-10.100.10.1}"
 NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3 1.1.1.1}"
 
-# ===== Minion VMs (ISO flow) =====
-PROM_ID="${PROM_ID:-7011}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
-GRAF_ID="${GRAF_ID:-7012}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
-K8S_ID="${K8S_ID:-7013}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.221}"
-STOR_ID="${STOR_ID:-7014}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
+# ===== Minion VMs =====
+PROM_ID="${PROM_ID:-4011}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
+GRAF_ID="${GRAF_ID:-4012}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
+K8S_ID="${K8S_ID:-4013}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.221}"
+STOR_ID="${STOR_ID:-4014}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
 
 # ===== WireGuard planes (master addresses) =====
 WG0_IP="${WG0_IP:-10.77.0.1/16}"; WG0_PORT="${WG0_PORT:-51820}"
@@ -57,13 +43,13 @@ WG2_IP="${WG2_IP:-10.79.0.1/16}"; WG2_PORT="${WG2_PORT:-51822}"
 WG3_IP="${WG3_IP:-10.80.0.1/16}"; WG3_PORT="${WG3_PORT:-51823}"
 WG_ALLOWED_CIDR="${WG_ALLOWED_CIDR:-10.77.0.0/16,10.78.0.0/16,10.79.0.0/16,10.80.0.0/16}"
 
-# ===== Per-minion WG IPs (ISO flow; /32) =====
+# ===== Per-minion WG IPs (all four planes; /32) =====
 PROM_WG0="${PROM_WG0:-10.77.0.2/32}"; PROM_WG1="${PROM_WG1:-10.78.0.2/32}"; PROM_WG2="${PROM_WG2:-10.79.0.2/32}"; PROM_WG3="${PROM_WG3:-10.80.0.2/32}"
 GRAF_WG0="${GRAF_WG0:-10.77.0.3/32}"; GRAF_WG1="${GRAF_WG1:-10.78.0.3/32}"; GRAF_WG2="${GRAF_WG2:-10.79.0.3/32}"; GRAF_WG3="${GRAF_WG3:-10.80.0.3/32}"
 K8S_WG0="${K8S_WG0:-10.77.0.4/32}";  K8S_WG1="${K8S_WG1:-10.78.0.4/32}";  K8S_WG2="${K8S_WG2:-10.79.0.4/32}";  K8S_WG3="${K8S_WG3:-10.80.0.4/32}"
 STOR_WG0="${STOR_WG0:-10.77.0.5/32}"; STOR_WG1="${STOR_WG1:-10.78.0.5/32}"; STOR_WG2="${STOR_WG2:-10.79.0.5/32}"; STOR_WG3="${STOR_WG3:-10.80.0.5/32}"
 
-# ===== VM sizing (ISO flow) =====
+# VM sizing
 MASTER_MEM="${MASTER_MEM:-4096}"; MASTER_CORES="${MASTER_CORES:-4}"; MASTER_DISK_GB="${MASTER_DISK_GB:-40}"
 MINION_MEM="${MINION_MEM:-4096}"; MINION_CORES="${MINION_CORES:-4}"; MINION_DISK_GB="${MINION_DISK_GB:-32}"
 K8S_MEM="${K8S_MEM:-8192}"
@@ -71,50 +57,22 @@ STOR_DISK_GB="${STOR_DISK_GB:-64}"
 
 # ===== Admin =====
 ADMIN_USER="${ADMIN_USER:-todd}"
-ADMIN_PUBKEY_FILE="${ADMIN_PUBKEY_FILE:-/home/todd/.ssh/id_ed25519.pub}"   # path to a pubkey to inject
-SSH_PUBKEY="${SSH_PUBKEY:-}"                 # literal public key string
+ADMIN_PUBKEY_FILE="${ADMIN_PUBKEY_FILE:-}"
+SSH_PUBKEY="${SSH_PUBKEY:-}"
 ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-${ALLOW_TODD_PASSWORD:-no}}"
-GUI_PROFILE="${GUI_PROFILE:-server}"    # rdp-minimal, server
+GUI_PROFILE="${GUI_PROFILE:-rdp-minimal}"
 
 # Optional
 INSTALL_ANSIBLE="${INSTALL_ANSIBLE:-yes}"
 INSTALL_SEMAPHORE="${INSTALL_SEMAPHORE:-try}"   # yes|try|no
 
-# ===== Proxmox Cloud-Init Clone Flow =====
-# Enable this with TARGET=proxmox-clones
-# TEMPLATE_ID: Proxmox VM template ID with cloud-init installed (Ubuntu/Debian cloud images or your own).
-TEMPLATE_ID="${TEMPLATE_ID:-9000}"             # Cloud-init template VM
-CLONES="${CLONES:-0}"                          # Number of clones to create (e.g., 50)
-CLONE_NAME_PREFIX="${CLONE_NAME_PREFIX:-minion}" # Resulting names: minion-001 .. minion-050
-STARTING_VMID="${STARTING_VMID:-12000}"        # First VMID to assign; will increment
-LAN_BRIDGE="${LAN_BRIDGE:-vmbr0}"              # Proxmox bridge for NIC
-LAN_MASK="${LAN_MASK:-24}"                     # e.g., 24 for /24
-LAN_GW="${LAN_GW:-10.100.10.1}"                # Default gateway on LAN
-LAN_IP_BASE="${LAN_IP_BASE:-10.100.10.50}"     # First LAN static IP (increments)
-LAN_DNS="${LAN_DNS:-10.100.10.1}"              # DNS for netplan (or set multiple: 10.100.10.1,1.1.1.1)
-SNIPPETS_STORAGE="${SNIPPETS_STORAGE:-local}"  # Proxmox storage ID that has snippets enabled (e.g., 'local')
-
-# WG fabric (minions get incremented /32s on wg0; Salt binds to wg0)
-WG_HOST_BASE="${WG_HOST_BASE:-10.16.1.10}"     # First minion WG /32 (increments)
-WG_ENDPOINT_HOST="${WG_ENDPOINT_HOST:-wg.unixbox.net}" # public hub endpoint (FQDN or IP)
-WG_ENDPOINT_PORT="${WG_ENDPOINT_PORT:-51820}"
-SALT_MASTER_WG_IP="${SALT_MASTER_WG_IP:-10.16.1.1}"    # hub/master IP on wg0
-WG_ALLOWED_MASTER="${WG_ALLOWED_MASTER:-10.16.1.1/32}" # narrow allowed-ips (avoid default route steal)
-WG_DNS="${WG_DNS:-}"                          # optional DNS over WG (empty = none)
-WG_MTU="${WG_MTU:-1420}"
-
-# Optionally tag each clone with a role/group (prom/graf/k8s/storage) in a round-robin or fixed mapping
-# Default: all 'minion'. You can override dynamically via CLONE_GROUP_CYCLE="prom,graf,k8s,storage"
-CLONE_GROUP_DEFAULT="${CLONE_GROUP_DEFAULT:-minion}"
-CLONE_GROUP_CYCLE="${CLONE_GROUP_CYCLE:-}"    # e.g., "prom,graf,k8s,storage"
-
-# ===== Paths / SSH =====
+# Paths / SSH
 BUILD_ROOT="${BUILD_ROOT:-/root/builds}"
 mkdir -p "$BUILD_ROOT"
 
 SSH_OPTS="-q -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o ConnectTimeout=6 -o BatchMode=yes"
 sssh(){ ssh $SSH_OPTS "$@"; }
-sscp(){ scp -q $SSH_OPTS "$@" ; }
+sscp(){ scp -q $SSH_OPTS "$@"; }
 
 log() { echo "[INFO]  $(date '+%F %T') - $*"; }
 warn(){ echo "[WARN]  $(date '+%F %T') - $*" >&2; }
@@ -123,28 +81,9 @@ die(){ err "$*"; exit 1; }
 
 command -v xorriso >/dev/null || { err "xorriso not installed (needed for ISO build)"; }
 
-# =========
-# UTILITIES
-# =========
-
-# Increment an IPv4 address by N (default 1)
-ip_inc() {
-  local ip=$1 inc=${2:-1}
-  IFS=. read -r a b c d <<< "$ip"
-  local x=$(( (a<<24) + (b<<16) + (c<<8) + d + inc ))
-  printf "%d.%d.%d.%d\n" $(( (x>>24)&255 )) $(( (x>>16)&255 )) $(( (x>>8)&255 )) $(( x&255 ))
-}
-
-require_ip_headroom() {
-  local start_ip=$1 count=$2
-  local last_ip
-  last_ip=$(ip_inc "$start_ip" $((count-1)))
-  [[ -n "$last_ip" ]] || { echo "IP headroom calc failed for $start_ip x $count"; exit 1; }
-}
-
-# =================
-# PROXMOX HELPERS
-# =================
+# =============================================================================
+# Proxmox helpers
+# =============================================================================
 
 pmx() { sssh root@"$PROXMOX_HOST" "$@"; }
 
@@ -166,6 +105,7 @@ pmx_wait_qga() {
   local vmid="$1" timeout="${2:-1200}" start; start=$(date +%s)
   log "Waiting for QEMU Guest Agent on VM $vmid ..."
   while :; do
+    # PVE has had both spellings across versions:
     if pmx "qm agent $vmid ping >/dev/null 2>&1 || qm guest ping $vmid >/dev/null 2>&1"; then
       log "QGA ready on VM $vmid"; return 0
     fi
@@ -174,6 +114,8 @@ pmx_wait_qga() {
   done
 }
 
+# ----- QGA JSON capability detection (memoized) -----
+# Sets/uses global PMX_QGA_JSON=yes|no to avoid repeated SSH checks.
 pmx_qga_has_json() {
   if [[ "${PMX_QGA_JSON:-}" == "yes" || "${PMX_QGA_JSON:-}" == "no" ]]; then
     echo "$PMX_QGA_JSON"; return
@@ -182,26 +124,39 @@ pmx_qga_has_json() {
   echo "$PMX_QGA_JSON"
 }
 
+# ----- Fire-and-forget guest exec (works on old/new PVE) -----
+# Usage: pmx_guest_exec <vmid> <command...>
+# Always inserts the required '--' separator and ignores output/exitcode.
 pmx_guest_exec() {
   local vmid="$1"; shift
+  # On older PVE, qm guest exec blocks until the command exits; on newer we still don't need to poll.
   pmx "qm guest exec $vmid -- $* >/dev/null 2>&1 || true"
 }
 
+# ----- Robust 'cat' via QGA that works with/without --output-format -----
+# Usage: pmx_guest_cat <vmid> <path>
+# Prints file contents to stdout, returns non-zero if it can’t retrieve.
 pmx_guest_cat() {
   local vmid="$1" path="$2"
   local has_json raw pid status outb64 outplain outjson
+
   has_json="$(pmx_qga_has_json)"
+
   if [[ "$has_json" == "yes" ]]; then
+    # Newer PVE: use JSON and poll exec-status
     raw="$(pmx "qm guest exec $vmid --output-format json -- /bin/cat '$path' 2>/dev/null || true")"
     pid="$(printf '%s\n' "$raw" | sed -n 's/.*\"pid\"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p')"
     [[ -n "$pid" ]] || return 2
     while :; do
       status="$(pmx "qm guest exec-status $vmid $pid --output-format json 2>/dev/null || true")" || true
+      # exited:true or exited:1 depending on build
       if printf '%s' "$status" | grep -Eq '"exited"[[:space:]]*:[[:space:]]*(true|1)'; then
         outb64="$(printf '%s' "$status" | sed -n 's/.*\"out-data\"[[:space:]]*:[[:space:]]*\"\([^"]*\)\".*/\1/p')"
         if [[ -n "$outb64" ]]; then
+          # Some builds base64-encode out-data
           printf '%s' "$outb64" | base64 -d 2>/dev/null || printf '%b' "${outb64//\\n/$'\n'}"
         else
+          # Or have plain "out": "...." with escapes
           outplain="$(printf '%s' "$status" | sed -n 's/.*\"out\"[[:space:]]*:[[:space:]]*\"\([^"]*\)\".*/\1/p')"
           printf '%b' "${outplain//\\n/$'\n'}"
         fi
@@ -210,7 +165,9 @@ pmx_guest_cat() {
       sleep 1
     done
   else
+    # Older PVE: single call prints a JSON blob to stdout; extract out-data
     outjson="$(pmx "qm guest exec $vmid -- /bin/cat '$path' 2>/dev/null || true")"
+    # Prefer "out-data" if present; otherwise try "out"
     outb64="$(printf '%s\n' "$outjson" | sed -n 's/.*\"out-data\"[[:space:]]*:[[:space:]]*\"\(.*\)\".*/\1/p')"
     if [[ -n "$outb64" ]]; then
       printf '%b' "${outb64//\\n/$'\n'}"
@@ -229,6 +186,7 @@ pmx_upload_iso() {
     log "ISO upload retry: $iso_base"; sleep 2
     sscp "$iso_file" "root@${PROXMOX_HOST}:/var/lib/vz/template/iso/$iso_base"
   }
+  # give pvesm a moment to index the new ISO
   pmx "for i in {1..30}; do pvesm list ${ISO_STORAGE} | awk '{print \$5}' | grep -qx \"${iso_base}\" && exit 0; sleep 1; done; exit 1" \
     || warn "pvesm list didn't show ${iso_base} yet—will still try to attach"
   echo "$iso_base"
@@ -253,6 +211,7 @@ qm create "$VMID" \
   --serial0 socket --ostype l26 --agent enabled=1
 qm set "$VMID" --efidisk0 ${VM_STORAGE}:0,efitype=4m,pre-enrolled-keys=0
 
+# attach ISO with retries (storage scan can lag)
 for i in {1..10}; do
   if qm set "$VMID" --ide2 ${ISO_STORAGE}:iso/${FINAL_ISO},media=cdrom 2>/dev/null; then
     break
@@ -260,6 +219,7 @@ for i in {1..10}; do
   sleep 1
 done
 
+# verify it actually attached
 if ! qm config "$VMID" | grep -q '^ide2:.*media=cdrom'; then
   echo "[X] failed to attach ISO ${FINAL_ISO} from ${ISO_STORAGE}" >&2
   exit 1
@@ -278,28 +238,10 @@ boot_from_disk() {
   pmx_wait_for_state "$vmid" "running" 600
 }
 
-: <<'COMMENT'
-ISO BUILDER (CLUSTER-SPECIFIC)
-
- mk_iso <name> <postinstall_src> <iso_out> [static_ip]
-   - Loop-mounts ISO_ORIG read-only, copies content to a staging dir,
-     injects:
-       * darksite payload (postinstall.sh + bootstrap.service)
-       * environment seed (99-provision.conf + authorized_keys)
-       * Debian preseed (DHCP or static IP)
-       * boot entries for automated install (isolinux/grub)
-   - Builds a hybrid BIOS/UEFI ISO with xorriso.
-
- Preseed Notes:
-   - Minimal package set (openssh-server), LVM atomic scheme, UTC, Pacific TZ.
-   - late_command copies darksite into target, enables bootstrap, then
-     initiates poweroff for the first postinstall run on next boot.
-
- Security Notes:
-   - SSH hardening is applied in postinstall scripts (not here).
-   - IPv6 disabled in master postinstall unless changed.
-COMMENT
-
+# =============================================================================
+# ISO builder (cluster-specific)
+# =============================================================================
+# mk_iso <name> <postinstall_src> <iso_out> [static_ip]
 mk_iso() {
   local name="$1" postinstall_src="$2" iso_out="$3" static_ip="${4:-}"
 
@@ -449,35 +391,13 @@ EOF
   xorriso -as mkisofs -o "$iso_out" -r -J -joliet-long -l \
     -b isolinux/isolinux.bin -c isolinux/boot.cat \
     -no-emul-boot -boot-load-size 4 -boot-info-table \
-    -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
+    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
     -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat "$cust"
 }
 
-: <<'COMMENT'
-MASTER POSTINSTALL PAYLOAD
---------------------------
-
- emit_postinstall_master <outfile>
-   Writes /root/darksite/postinstall-master.sh for the hub node.
-   Responsibilities:
-     - Base OS enablement (repos, guest agent, modules).
-     - Admin user creation and SSH hardening (LAN-scoped fallback optional).
-     - WireGuard wg0..wg3 hub bring-up (keys, systemd or manual).
-     - nftables baseline firewall (drop-by-default; permit SSH/WG/RDP).
-     - Hub seed (/srv/wg/hub.env + ENROLL_ENABLED flag).
-     - Helper tools:
-         * wg-add-peer: add/update peer entries + config persistence.
-         * wg-enrollment: gate auto-enrollment window on/off.
-         * register-minion: inventory to Ansible + Prometheus file_sd.
-     - Telemetry stack: Prometheus + node_exporter + Grafana, pinned to wg1 IP.
-     - Control stack: Salt master + API on wg0; optional Ansible/Semaphore.
-     - Optional GUI: xrdp/openbox or minimal GNOME; service bound to MASTER_LAN.
-     - Final: disable bootstrap, cleanly power off.
-
-Idempotency:
-   Safe to re-run; key files are only created when absent; services reloaded.
-COMMENT
-
+# =============================================================================
+# INLINE: postinstall-master.sh
+# =============================================================================
 emit_postinstall_master() {
   local out="$1"
   cat >"$out" <<'EOS'
@@ -518,7 +438,7 @@ EOF
   apt-get install -y --no-install-recommends \
     sudo openssh-server curl wget ca-certificates gnupg jq xxd unzip tar \
     iproute2 iputils-ping ethtool tcpdump net-tools \
-    nftables wireguard-tools vim \
+    nftables wireguard-tools \
     chrony rsyslog qemu-guest-agent dbus-x11 || true
 
   echo wireguard >/etc/modules-load.d/wireguard.conf || true
@@ -931,28 +851,9 @@ main_master
 EOS
 }
 
-: <<'COMMENT'
-MINION POSTINSTALL
-------------------
- emit_postinstall_minion <outfile>
-   Writes /root/darksite/postinstall-minion.sh for a minion VM.
-   Responsibilities:
-     - Base OS + admin user + guest agent.
-     - Discover hub.env (multiple candidate paths) and assert required vars.
-     - Generate wg0..wg3 keys/configs:
-         * wg0 peers the hub (allowed-ips = WG_ALLOWED_CIDR).
-         * wg1..wg3 local addresses only; peers added by hub during enroll.
-     - Auto-enrollment:
-         Calls wg-add-peer on the hub for each interface if ENROLL_ENABLED.
-     - nftables baseline, node_exporter bound to wg1, Salt minion to wg0 hub.
-     - Register into master (Ansible inventory + Prometheus file_sd).
-     - Storage profile (ZFS/iSCSI) if group == storage.
-     - Final: disable bootstrap, power off.
-
-Security:
-   - No password auth; ListenAddress binds to wg0 IP; 'AllowUsers $ADMIN_USER'.
-COMMENT
-
+# =============================================================================
+# INLINE: postinstall-minion.sh (AUTO-ENROLL ALL 4 WG)
+# =============================================================================
 emit_postinstall_minion() {
   local out="$1"
   cat >"$out" <<'EOS'
@@ -984,7 +885,7 @@ EOF
   apt-get install -y --no-install-recommends \
     sudo openssh-server curl wget ca-certificates gnupg jq unzip xxd tar \
     iproute2 iputils-ping ethtool tcpdump net-tools \
-    wireguard wireguard-tools nftables vim \
+    wireguard wireguard-tools nftables \
     prometheus-node-exporter chrony rsyslog qemu-guest-agent || true
   systemctl enable --now ssh chrony rsyslog qemu-guest-agent || true
 }
@@ -1206,20 +1107,9 @@ main
 EOS
 }
 
-: <<'COMMENT'
-MINION WRAPPER EMITTER
-----------------------
- emit_minion_wrapper <outfile> <group> <wg0/32> <wg1/32> <wg2/32> <wg3/32>
-   - Embeds hub.env captured from the master into the ISO's darksite seed.
-   - Persists wanted WG addresses and group into /etc/environment.d.
-   - Drops the minion postinstall script and executes it immediately during
-     first boot (via darksite bootstrap).
-
-Rationale:
-   Decouples the master build from minion specifics while avoiding race
-   conditions (hub.env fetch) and preventing cross-plane address drift.
-COMMENT
-
+# =============================================================================
+# WRAPS MINION PAYLOAD WITH EMBEDDED HUB.ENV + WANTED ADDRS
+# =============================================================================
 emit_minion_wrapper() {
   # Usage: emit_minion_wrapper <outfile> <group> <wg0/32> <wg1/32> <wg2/32> <wg3/32>
   local out="$1" group="$2" wg0="$3" wg1="$4" wg2="$5" wg3="$6"
@@ -1274,16 +1164,10 @@ EOSH
   chmod +x "$out"
 }
 
-: <<'COMMENT'
-MASTER ENROLLMENT SEED
-----------------------
-ensure_master_enrollment_seed <vmid>
-   - Via QGA, ensures /srv/wg/hub.env exists (with defaults) and opens the
-     enrollment flag ENROLL_ENABLED before minions boot.
-   - Protects against races where hub.env is not yet persisted on disk.
-COMMENT
-
-
+# =============================================================================
+# Master enrollment seed (avoid race before fetching hub.env)
+# =============================================================================
+# ensure_master_enrollment_seed <vmid>
 ensure_master_enrollment_seed() {
   local vmid="$1"
   pmx_guest_exec "$vmid" /bin/bash -lc "$(cat <<'EOS'
@@ -1319,24 +1203,9 @@ EOS
 )"
 }
 
-: <<'COMMENT'
-PROXMOX CLUSTER FLOW
---------------------
- proxmox_cluster()
-   1) Build master ISO with postinstall payload, deploy VM, let installer power
-      off, reboot from disk for postinstall, then wait for clean shutdown.
-   2) Start master, wait for QGA, seed hub.env + ENROLL_ENABLED.
-   3) Fetch hub.env (QGA cat preferred, SSH fallback).
-   4) Build and deploy minions (prom, graf, k8s, storage), each with wrapper:
-        - static LAN IPs, WG wanted /32’s, group tags.
-        - waits for installer shutdown, boots from disk.
-   5) Close WireGuard enrollment window on the master.
-
-Exit Conditions:
-   - Any fatal error aborts with non-zero exit code (controller side).
-   - Timeouts are generous; adjust to your infra speed profile.
-COMMENT
-
+# =============================================================================
+# PROXMOX CLUSTER FLOW
+# =============================================================================
 proxmox_cluster() {
   # --- Build & deploy master ---
   log "Emitting postinstall-master.sh"
@@ -1428,34 +1297,10 @@ proxmox_cluster() {
   log "Done. Master + minions deployed; wg0..wg3 up; SSH/Salt/Ansible(+Semaphore*) on wg0; Prom/Grafana+exporters on wg1; wg2 for k8s; wg3 for storage."
 }
 
-: <<'COMMENT'
-AWS DARKSITE PREPARATION (SHARED)
----------------------------------
-prepare_darksite_generic()
-   - Constructs a generic darksite payload with postinstall + bootstrap.service
-     and a small /etc/environment.d seed (DOMAIN, USE_CLOUD_INIT, PROFILE).
-   - Used by both aws-ami and firecracker flows to centralize guest setup.
-
-AWS HELPERS
------------
- aws_cli(): region/profile wrapper around 'aws' CLI.
- resolve_debian13_ami(<arch>): queries owner 136693071363 for latest Debian 13.
- wait_for_ssh(<host> <user> [pem] [timeout]): poll for SSH reachability.
-
-AWS AMI BAKE / RUN
-------------------
- aws_bake_ami():
-   - Resolves base Debian 13 AMI (or uses AWS_BASE_AMI), brings up a "builder"
-     instance, ships darksite, triggers bootstrap (which powers off), snapshots
-     to a named AMI, and terminates the builder.
-   - Security group/ingress is created as needed; SSH ingress is optional and
-     can be auto-scoped to the controller’s public /32.
-
-aws_run_from_ami():
-   - Launches an instance from AWS_AMI_ID into default VPC/subnet unless
-     AWS_SUBNET_ID provided. Optional public IP association and keypair import.
-COMMENT
-
+# =============================================================================
+# AWS / FIRECRACKER (lightly adapted from your AWS script)
+# =============================================================================
+# --- Shared darksite payload for AMI/Firecracker ---
 prepare_darksite_generic() {
   local BUILD_DIR="${BUILD_DIR:-/root/build}"
   local CUSTOM_DIR="$BUILD_DIR/custom"
@@ -1712,25 +1557,7 @@ aws_run_from_ami(){
   log "Launched: $iid  PublicIP=$pub_ip"
 }
 
-: <<'COMMENT'
-FIRECRACKER FLOW
-----------------
- firecracker_flow()
-   - Debootstrap minimal Debian rootfs into $FC_ROOTFS_DIR.
-   - Inject darksite (postinstall + env), enable systemd-networkd (static IP),
-     and first-boot service to run postinstall once inside the micro-VM.
-   - Assemble ext4 image, pick a vmlinux, generate Firecracker config JSON,
-     emit a runnable wrapper (run-fc.sh) that creates a TAP iface and
-     configures simple NAT via nftables.
-
-Outputs:
-   $FC_OUTPUT_VMLINUX, $FC_IMG (ext4), $FC_CONFIG_JSON, $FC_RUN_SCRIPT
-
-Notes:
-   - TAP provisioning assumes host has CAP_NET_ADMIN; NAT is best-effort.
-   - Seccomp disabled by default (--seccomp-level=0) for bootstrap convenience.
-COMMENT
-
+# -------- Firecracker flow (same as before) --------
 firecracker_flow(){
   local BUILD_DIR="${BUILD_DIR:-/root/build}"
   local FC_ROOTFS_DIR="${FC_ROOTFS_DIR:-$BUILD_DIR/fcroot}"
@@ -1840,9 +1667,9 @@ EOS
   log " - Runner : $FC_RUN_SCRIPT"
 }
 
-
+# =============================================================================
 # MAIN
-
+# =============================================================================
 case "$TARGET" in
   proxmox-cluster) proxmox_cluster ;;
   aws-ami)         aws_bake_ami ;;
@@ -1850,4 +1677,3 @@ case "$TARGET" in
   firecracker)     firecracker_flow ;;
   *)               die "Unknown TARGET '$TARGET' (use proxmox-cluster | aws-ami | aws-run | firecracker)" ;;
 esac
-[bpfenv] root@onyx:~/deploy/v5# 
