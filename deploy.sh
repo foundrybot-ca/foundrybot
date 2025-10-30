@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# Unified multi-target deployer:
-# - Proxmox cluster (master + 4 minions, 4x WireGuard planes, Salt/Prom/Grafana)
-# - AWS (AMI bake / run) with darksite bootstrap
-# - Firecracker (debootstrap rootfs + runner)
-set -euo pipefail
+# build.sh — Debian 13 universal SB+TPM ZFS image builder (Proxmox + AWS)
+# UEFI-only, ZFS-on-root with Boot Environments, UKI signing, Secure Boot, Sanoid
+# Modes: proxmox-cluster | image-only | aws | packer-scaffold | firecracker-bundle
+set -Eeuo pipefail
+shopt -s extglob
+trap 'rc=$?; echo; echo "[X] ${BASH_COMMAND@Q} failed at line ${LINENO} (rc=${rc})";
+      { command -v nl >/dev/null && nl -ba "$0" | sed -n "$((LINENO-6)),$((LINENO+6))p"; } || true; exit $rc' ERR
 
-# ============================ DRIVER MODE ================================
-TARGET="${TARGET:-proxmox-cluster}"   # proxmox-cluster | aws-ami | aws-run | firecracker
+# ==============================================================================
+# 0) DRIVER MODE (env or positional)
+# ==============================================================================
+TARGET="${TARGET:-proxmox-cluster}"  # default; can be overridden by $1
+if [ "${1:-}" ]; then TARGET="$1"; shift; fi  # allow ./build.sh image-only, etc.
 
-# ============================ GLOBAL CONFIG =============================
-INPUT="${INPUT:-1}"   # 1|fiend, 2|dragon, 3|lion
-DOMAIN="${DOMAIN:-foundryBot.ca}"
-
+# ==============================================================================
+# 1) GLOBAL CONFIG
+# ==============================================================================
+INPUT="${INPUT:-1}"  # 1|fiend, 2|dragon, 3|lion
+DOMAIN="${DOMAIN:-unixbox.net}"
 case "$INPUT" in
   1|fiend)  PROXMOX_HOST="${PROXMOX_HOST:-10.100.10.225}" ;;
   2|dragon) PROXMOX_HOST="${PROXMOX_HOST:-10.100.10.226}" ;;
@@ -19,467 +25,952 @@ case "$INPUT" in
   *) echo "[ERROR] Unknown INPUT=$INPUT" >&2; exit 1 ;;
 esac
 
-ISO_ORIG="${ISO_ORIG:-/root/debian-13.0.0-amd64-DVD-1.iso}"
+BUILD_ROOT="${BUILD_ROOT:-/root/builds}"; mkdir -p "$BUILD_ROOT"
+DARKSITE_SUITE="${DARKSITE_SUITE:-trixie}"     # Debian 13
+ARCH="${ARCH:-amd64}"
+
+# Secure Boot keys (db.key/db.crt) — real keys preferred; temp keys auto-generated if missing
+SB_KEY="${SB_KEY:-$BUILD_ROOT/keys/db.key}"
+SB_CRT="${SB_CRT:-$BUILD_ROOT/keys/db.crt}"
+UEFI_BLOB="${UEFI_BLOB:-$BUILD_ROOT/keys/blob.bin}"  # optional: UEFI var-store blob for AWS --uefi-data
+
+# AWS
+AWS_S3_BUCKET="${AWS_S3_BUCKET:-}"
+AWS_AMI_NAME="${AWS_AMI_NAME:-debian13-sb-zfs-$(date +%F)}"
+AWS_LT_NAME="${AWS_LT_NAME:-debian13-sb-zfs-lt}"
+UNIVERSAL_QCOW2="${UNIVERSAL_QCOW2:-$BUILD_ROOT/universal.qcow2}"
+UNIVERSAL_RAW="${UNIVERSAL_RAW:-$BUILD_ROOT/universal.raw}"
+
+# ISO input/output
+ISO_ORIG="${ISO_ORIG:-/var/lib/libvirt/boot/debian-13.1.0-amd64-netinst.iso}"
 ISO_STORAGE="${ISO_STORAGE:-local}"
 VM_STORAGE="${VM_STORAGE:-local-zfs}"
+ROOT_SCHEME="${ROOT_SCHEME:-zfs}"
 
-# ===== Master VM =====
-MASTER_ID="${MASTER_ID:-4010}"; MASTER_NAME="${MASTER_NAME:-master}"
-MASTER_LAN="${MASTER_LAN:-10.100.10.224}"
+# Network (site)
 NETMASK="${NETMASK:-255.255.255.0}"
 GATEWAY="${GATEWAY:-10.100.10.1}"
-NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3 1.1.1.1}"
+NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3}"
 
-# ===== Minion VMs =====
-PROM_ID="${PROM_ID:-4011}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
-GRAF_ID="${GRAF_ID:-4012}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
-K8S_ID="${K8S_ID:-4013}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.221}"
-STOR_ID="${STOR_ID:-4014}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
-
-# ===== WireGuard planes (master addresses) =====
-WG0_IP="${WG0_IP:-10.77.0.1/16}"; WG0_PORT="${WG0_PORT:-51820}"
-WG1_IP="${WG1_IP:-10.78.0.1/16}"; WG1_PORT="${WG1_PORT:-51821}"
-WG2_IP="${WG2_IP:-10.79.0.1/16}"; WG2_PORT="${WG2_PORT:-51822}"
-WG3_IP="${WG3_IP:-10.80.0.1/16}"; WG3_PORT="${WG3_PORT:-51823}"
+# WireGuard hub subnets/ports (master on .1; minions start at .10)
+WG0_IP="${WG0_IP:-10.77.0.1/16}";  WG0_PORT="${WG0_PORT:-51820}"   # control
+WG1_IP="${WG1_IP:-10.78.0.1/16}";  WG1_PORT="${WG1_PORT:-51821}"   # telemetry
+WG2_IP="${WG2_IP:-10.79.0.1/16}";  WG2_PORT="${WG2_PORT:-51822}"   # build
+WG3_IP="${WG3_IP:-10.80.0.1/16}";  WG3_PORT="${WG3_PORT:-51823}"   # storage
 WG_ALLOWED_CIDR="${WG_ALLOWED_CIDR:-10.77.0.0/16,10.78.0.0/16,10.79.0.0/16,10.80.0.0/16}"
 
-# ===== Per-minion WG IPs (all four planes; /32) =====
-PROM_WG0="${PROM_WG0:-10.77.0.2/32}"; PROM_WG1="${PROM_WG1:-10.78.0.2/32}"; PROM_WG2="${PROM_WG2:-10.79.0.2/32}"; PROM_WG3="${PROM_WG3:-10.80.0.2/32}"
-GRAF_WG0="${GRAF_WG0:-10.77.0.3/32}"; GRAF_WG1="${GRAF_WG1:-10.78.0.3/32}"; GRAF_WG2="${GRAF_WG2:-10.79.0.3/32}"; GRAF_WG3="${GRAF_WG3:-10.80.0.3/32}"
-K8S_WG0="${K8S_WG0:-10.77.0.4/32}";  K8S_WG1="${K8S_WG1:-10.78.0.4/32}";  K8S_WG2="${K8S_WG2:-10.79.0.4/32}";  K8S_WG3="${K8S_WG3:-10.80.0.4/32}"
-STOR_WG0="${STOR_WG0:-10.77.0.5/32}"; STOR_WG1="${STOR_WG1:-10.78.0.5/32}"; STOR_WG2="${STOR_WG2:-10.79.0.5/32}"; STOR_WG3="${STOR_WG3:-10.80.0.5/32}"
+# Role IDs/IPs
+MASTER_ID="${MASTER_ID:-5010}"; MASTER_NAME="${MASTER_NAME:-master}"; MASTER_LAN="${MASTER_LAN:-10.100.10.124}"
+PROM_ID="${PROM_ID:-5011}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.123}"
+GRAF_ID="${GRAF_ID:-5012}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.122}"
+K8S_ID="${K8S_ID:-5013}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.121}"
+STOR_ID="${STOR_ID:-5014}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.120}"
 
-# VM sizing
-MASTER_MEM="${MASTER_MEM:-4096}"; MASTER_CORES="${MASTER_CORES:-4}"; MASTER_DISK_GB="${MASTER_DISK_GB:-40}"
-MINION_MEM="${MINION_MEM:-4096}"; MINION_CORES="${MINION_CORES:-4}"; MINION_DISK_GB="${MINION_DISK_GB:-32}"
+# Sizing
+MASTER_MEM="${MASTER_MEM:-4096}"; MASTER_CORES="${MASTER_CORES:-8}"; MASTER_DISK_GB="${MASTER_DISK_GB:-20}"
+MINION_MEM="${MINION_MEM:-4096}"; MINION_CORES="${MINION_CORES:-4}"; MINION_DISK_GB="${MINION_DISK_GB:-20}"
 K8S_MEM="${K8S_MEM:-8192}"
 STOR_DISK_GB="${STOR_DISK_GB:-64}"
 
-# ===== Admin =====
-ADMIN_USER="${ADMIN_USER:-user}"
-ADMIN_PUBKEY_FILE="${ADMIN_PUBKEY_FILE:-}"
-SSH_PUBKEY="${SSH_PUBKEY:-}"
-ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-${ALLOW_TODD_PASSWORD:-no}}"
-GUI_PROFILE="${GUI_PROFILE:-server}"  # rdp-minimal
-
-# Optional
+# Admin / ops
+ADMIN_USER="${ADMIN_USER:-debian}"
+ADMIN_PUBKEY_FILE="${ADMIN_PUBKEY_FILE:-/home/debian/.ssh/id_ed25519.pub}"
+ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-no}"
+GUI_PROFILE="${GUI_PROFILE:-server}"   # server by default (no fluxbox)
 INSTALL_ANSIBLE="${INSTALL_ANSIBLE:-yes}"
-INSTALL_SEMAPHORE="${INSTALL_SEMAPHORE:-try}"   # yes|try|no
+INSTALL_SEMAPHORE="${INSTALL_SEMAPHORE:-try}"
+ZFS_MOUNTPOINT="${ZFS_MOUNTPOINT:-/mnt/share}"
 
-# Paths / SSH
-BUILD_ROOT="${BUILD_ROOT:-/root/builds}"
-mkdir -p "$BUILD_ROOT"
+# ==============================================================================
+# 2) UTILS + SANITY
+# ==============================================================================
+log()  { echo "[INFO]  $(date '+%F %T') - $*"; }
+warn() { echo "[WARN]  $(date '+%F %T') - $*" >&2; }
+err()  { echo "[ERROR] $(date '+%F %T') - $*" >&2; }
+die()  { err "$*"; exit 1; }
 
-SSH_OPTS="-q -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o ConnectTimeout=6 -o BatchMode=yes"
+SSH_OPTS="-q -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=6 -o BatchMode=yes"
 sssh(){ ssh $SSH_OPTS "$@"; }
 sscp(){ scp -q $SSH_OPTS "$@"; }
+retry(){ local n="$1" s="$2"; shift 2; local i; for ((i=1;i<=n;i++)); do "$@" && return 0; sleep "$s"; done; return 1; }
 
-log() { echo "[INFO]  $(date '+%F %T') - $*"; }
-warn(){ echo "[WARN]  $(date '+%F %T') - $*" >&2; }
-err() { echo "[ERROR] $(date '+%F %T') - $*" >&2; }
-die(){ err "$*"; exit 1; }
-
-command -v xorriso >/dev/null || { err "xorriso not installed (needed for ISO build)"; }
-
-# =============================================================================
-# Proxmox helpers
-# =============================================================================
-
-pmx() { sssh root@"$PROXMOX_HOST" "$@"; }
-
-pmx_vm_state() { pmx "qm status $1 2>/dev/null | awk '{print tolower(\$2)}'" || echo "unknown"; }
-
-pmx_wait_for_state() {
-  local vmid="$1" want="$2" timeout="${3:-2400}" start state
-  start=$(date +%s)
-  log "Waiting for VM $vmid to be $want ..."
-  while :; do
-    state="$(pmx_vm_state "$vmid")"
-    [[ "$state" == "$want" ]] && { log "VM $vmid is $state"; return 0; }
-    (( $(date +%s) - start > timeout )) && { err "Timeout: VM $vmid not $want (state=$state)"; return 1; }
-    sleep 5
-  done
+validate_env_or_die() {
+  [[ ${EUID:-$(id -u)} -eq 0 ]] || die "Run as root"
+  case "$TARGET" in
+    image-only|packer-scaffold|firecracker-bundle) local -a req=(BUILD_ROOT ISO_ORIG) ;;
+    proxmox-cluster)                               local -a req=(BUILD_ROOT ISO_ORIG PROXMOX_HOST VM_STORAGE ISO_STORAGE) ;;
+    aws)                                           local -a req=(BUILD_ROOT AWS_S3_BUCKET) ;;
+    *)                                             local -a req=(BUILD_ROOT ISO_ORIG) ;;
+  esac
+  local -a miss=(); for v in "${req[@]}"; do [[ -n "${!v:-}" ]] || miss+=("$v"); done
+  ((${#miss[@]}==0)) || die "missing: ${miss[*]}"
+  [[ -r "$ISO_ORIG" ]] || { [[ "$TARGET" == aws ]] || die "ISO_ORIG not readable: $ISO_ORIG"; }
+  mkdir -p "$BUILD_ROOT" "$BUILD_ROOT/keys"
 }
+validate_env_or_die
 
-pmx_wait_qga() {
-  local vmid="$1" timeout="${2:-1200}" start; start=$(date +%s)
-  log "Waiting for QEMU Guest Agent on VM $vmid ..."
-  while :; do
-    # PVE has had both spellings across versions:
-    if pmx "qm agent $vmid ping >/dev/null 2>&1 || qm guest ping $vmid >/dev/null 2>&1"; then
-      log "QGA ready on VM $vmid"; return 0
-    fi
-    (( $(date +%s) - start > timeout )) && { err "Timeout waiting for QGA on VM $vmid"; return 1; }
-    sleep 3
-  done
-}
+mask_to_cidr(){ awk -v m="$1" 'BEGIN{split(m,a,".");c=0;for(i=1;i<=4;i++){x=a[i]+0;for(j=7;j>=0;j--) if((x>>j)&1) c++; else break}print c}'; }
 
-# ----- QGA JSON capability detection (memoized) -----
-# Sets/uses global PMX_QGA_JSON=yes|no to avoid repeated SSH checks.
-pmx_qga_has_json() {
-  if [[ "${PMX_QGA_JSON:-}" == "yes" || "${PMX_QGA_JSON:-}" == "no" ]]; then
-    echo "$PMX_QGA_JSON"; return
-  fi
-  PMX_QGA_JSON="$( pmx "qm guest exec -h 2>&1 | grep -q -- '--output-format' && echo yes || echo no" | tr -d '\r' )"
-  echo "$PMX_QGA_JSON"
-}
-
-# ----- Fire-and-forget guest exec (works on old/new PVE) -----
-# Usage: pmx_guest_exec <vmid> <command...>
-# Always inserts the required '--' separator and ignores output/exitcode.
-pmx_guest_exec() {
-  local vmid="$1"; shift
-  # On older PVE, qm guest exec blocks until the command exits; on newer we still don't need to poll.
-  pmx "qm guest exec $vmid -- $* >/dev/null 2>&1 || true"
-}
-
-# ----- Robust 'cat' via QGA that works with/without --output-format -----
-# Usage: pmx_guest_cat <vmid> <path>
-# Prints file contents to stdout, returns non-zero if it can’t retrieve.
-pmx_guest_cat() {
-  local vmid="$1" path="$2"
-  local has_json raw pid status outb64 outplain outjson
-
-  has_json="$(pmx_qga_has_json)"
-
-  if [[ "$has_json" == "yes" ]]; then
-    # Newer PVE: use JSON and poll exec-status
-    raw="$(pmx "qm guest exec $vmid --output-format json -- /bin/cat '$path' 2>/dev/null || true")"
-    pid="$(printf '%s\n' "$raw" | sed -n 's/.*\"pid\"[[:space:]]*:[[:space:]]*\([0-9]\+\).*/\1/p')"
-    [[ -n "$pid" ]] || return 2
-    while :; do
-      status="$(pmx "qm guest exec-status $vmid $pid --output-format json 2>/dev/null || true")" || true
-      # exited:true or exited:1 depending on build
-      if printf '%s' "$status" | grep -Eq '"exited"[[:space:]]*:[[:space:]]*(true|1)'; then
-        outb64="$(printf '%s' "$status" | sed -n 's/.*\"out-data\"[[:space:]]*:[[:space:]]*\"\([^"]*\)\".*/\1/p')"
-        if [[ -n "$outb64" ]]; then
-          # Some builds base64-encode out-data
-          printf '%s' "$outb64" | base64 -d 2>/dev/null || printf '%b' "${outb64//\\n/$'\n'}"
-        else
-          # Or have plain "out": "...." with escapes
-          outplain="$(printf '%s' "$status" | sed -n 's/.*\"out\"[[:space:]]*:[[:space:]]*\"\([^"]*\)\".*/\1/p')"
-          printf '%b' "${outplain//\\n/$'\n'}"
-        fi
-        break
-      fi
-      sleep 1
-    done
-  else
-    # Older PVE: single call prints a JSON blob to stdout; extract out-data
-    outjson="$(pmx "qm guest exec $vmid -- /bin/cat '$path' 2>/dev/null || true")"
-    # Prefer "out-data" if present; otherwise try "out"
-    outb64="$(printf '%s\n' "$outjson" | sed -n 's/.*\"out-data\"[[:space:]]*:[[:space:]]*\"\(.*\)\".*/\1/p')"
-    if [[ -n "$outb64" ]]; then
-      printf '%b' "${outb64//\\n/$'\n'}"
-    else
-      outplain="$(printf '%s\n' "$outjson" | sed -n 's/.*\"out\"[[:space:]]*:[[:space:]]*\"\(.*\)\".*/\1/p')"
-      [[ -n "$outplain" ]] || return 3
-      printf '%b' "${outplain//\\n/$'\n'}"
-    fi
-  fi
-}
-
-pmx_upload_iso() {
-  local iso_file="$1" iso_base
-  iso_base="$(basename "$iso_file")"
-  sscp "$iso_file" "root@${PROXMOX_HOST}:/var/lib/vz/template/iso/$iso_base" || {
-    log "ISO upload retry: $iso_base"; sleep 2
-    sscp "$iso_file" "root@${PROXMOX_HOST}:/var/lib/vz/template/iso/$iso_base"
-  }
-  # give pvesm a moment to index the new ISO
-  pmx "for i in {1..30}; do pvesm list ${ISO_STORAGE} | awk '{print \$5}' | grep -qx \"${iso_base}\" && exit 0; sleep 1; done; exit 1" \
-    || warn "pvesm list didn't show ${iso_base} yet—will still try to attach"
-  echo "$iso_base"
-}
-
-pmx_deploy() {
-  local vmid="$1" vmname="$2" iso_file="$3" mem="$4" cores="$5" disk_gb="$6"
-  local iso_base
-  iso_base="$(pmx_upload_iso "$iso_file")"
-  pmx \
-    VMID="$vmid" VMNAME="${vmname}.${DOMAIN}-$vmid" FINAL_ISO="$iso_base" \
-    VM_STORAGE="$VM_STORAGE" ISO_STORAGE="$ISO_STORAGE" \
-    DISK_SIZE_GB="$disk_gb" MEMORY_MB="$mem" CORES="$cores" 'bash -s' <<'EOSSH'
+# ----------------------------------------------------------------------
+# PROXMOX VM: q35 + OVMF (UEFI), EFI vars in Setup Mode, TPM v2 ON
+# ----------------------------------------------------------------------
+pmx(){ sssh root@"${PROXMOX_HOST}" "$@"; }
+pmx_vm_state(){ pmx "qm status $1 2>/dev/null | awk '{print tolower(\$2)}'" || echo "unknown"; }
+pmx_wait_for_state(){ local id="$1" want="$2" t="${3:-2400}" s=$(date +%s) st; while :; do st="$(pmx_vm_state "$id")"; [[ "$st" == "$want" ]] && return 0; (( $(date +%s)-s > t )) && return 1; sleep 5; done; }
+pmx_upload_iso(){ local iso="$1" base; base="$(basename "$iso")"
+  sscp "$iso" "root@${PROXMOX_HOST}:/var/lib/vz/template/iso/$base" || { sleep 2; sscp "$iso" "root@${PROXMOX_HOST}:/var/lib/vz/template/iso/$base"; }
+  pmx "for i in {1..30}; do pvesm list ${ISO_STORAGE} | awk '{print \$5}' | grep -qx \"${base}\" && exit 0; sleep 1; done; exit 0" || true
+  echo "$base"; }
+pmx_deploy_uefi(){ # id name iso mem cores disk_gb
+  local vmid="$1" name="$2" iso="$3" mem="$4" cores="$5" disk_gb="$6"
+  local base; base="$(pmx_upload_iso "$iso")"
+  pmx VMID="$vmid" VMNAME="${name}.${DOMAIN}-$vmid" FINAL_ISO="$base" VM_STORAGE="$VM_STORAGE" ISO_STORAGE="$ISO_STORAGE" DISK_SIZE_GB="$disk_gb" MEMORY_MB="$mem" CORES="$cores" 'bash -s' <<'EOSSH'
 set -euo pipefail
 qm destroy "$VMID" --purge >/dev/null 2>&1 || true
-qm create "$VMID" \
-  --name "$VMNAME" \
-  --memory "$MEMORY_MB" --cores "$CORES" \
-  --net0 virtio,bridge=vmbr0,firewall=1 \
-  --scsihw virtio-scsi-single \
-  --scsi0 ${VM_STORAGE}:${DISK_SIZE_GB} \
-  --serial0 socket --ostype l26 --agent enabled=1
+qm create "$VMID" --name "$VMNAME" --machine q35 --bios ovmf --ostype l26 \
+  --agent enabled=1,fstrim_cloned_disks=1 --memory "$MEMORY_MB" --cores "$CORES" \
+  --scsihw virtio-scsi-single --scsi0 ${VM_STORAGE}:${DISK_SIZE_GB},ssd=1,discard=on,iothread=1 \
+  --net0 virtio,bridge=vmbr0,firewall=1 --serial0 socket --rng0 source=/dev/urandom
 qm set "$VMID" --efidisk0 ${VM_STORAGE}:0,efitype=4m,pre-enrolled-keys=0
-
-# attach ISO with retries (storage scan can lag)
-for i in {1..10}; do
-  if qm set "$VMID" --ide2 ${ISO_STORAGE}:iso/${FINAL_ISO},media=cdrom 2>/dev/null; then
-    break
-  fi
-  sleep 1
-done
-
-# verify it actually attached
-if ! qm config "$VMID" | grep -q '^ide2:.*media=cdrom'; then
-  echo "[X] failed to attach ISO ${FINAL_ISO} from ${ISO_STORAGE}" >&2
-  exit 1
-fi
-
+qm set "$VMID" --tpmstate0 ${VM_STORAGE}:1,version=v2.0
+for i in {1..10}; do qm set "$VMID" --ide2 ${ISO_STORAGE}:iso/${FINAL_ISO},media=cdrom && break || sleep 1; done
 qm set "$VMID" --boot order=ide2
 qm start "$VMID"
 EOSSH
 }
+wait_poweroff(){ pmx_wait_for_state "$1" "stopped" "${2:-2400}"; }
+boot_from_disk_uefi(){ local id="$1"; pmx "qm set $id --delete ide2; qm set $id --boot order=scsi0; qm start $id"; pmx_wait_for_state "$id" "running" 600; }
 
-wait_poweroff() { pmx_wait_for_state "$1" "stopped" "${2:-2400}"; }
+# ==============================================================================
+# DARKSITE REPO (APT + offline extras)
+# ==============================================================================
+: "${ARCH:=amd64}"
+: "${DARKSITE_SUITE:=trixie}"
+: "${DARKSITE:=/root/builds/darksite}"
 
-boot_from_disk() {
-  local vmid="$1"
-  pmx "qm set $vmid --delete ide2; qm set $vmid --boot order=scsi0; qm start $vmid"
-  pmx_wait_for_state "$vmid" "running" 600
+build_dark_repo() {
+  local out="$1" arch="${2:-$ARCH}" suite="${3:-$DARKSITE_SUITE}"
+  [[ -n "$out" ]] || { echo "[X] build_dark_repo: outdir required" >&2; return 2; }
+  rm -f "$out/.stamp" 2>/dev/null || true
+  rm -rf "$out"; mkdir -p "$out" "$out/extras" "$out/45wg"
+  docker run --rm \
+    -e DEBIAN_FRONTEND=noninteractive -e SUITE="$suite" -e ARCH="$arch" \
+    -e BASE_PACKAGES="apt apt-utils openssh-server wireguard-tools nftables qemu-guest-agent \
+dracut systemd-boot-efi systemd-ukify sbsigntool tpm2-tools mokutil efitools efivar \
+zfsutils-linux zfs-dkms zfs-dracut dkms build-essential linux-headers-amd64 linux-image-amd64 \
+sudo ca-certificates curl wget jq unzip tar xz-utils iproute2 iputils-ping ethtool tcpdump net-tools chrony rsyslog \
+bpftrace bpfcc-tools perf-tools-unstable sysstat strace lsof xorriso syslinux ansible nginx \
+sanoid syncoid debsums" \
+    -v "$out:/repo" "debian:${suite}" bash -lc '
+set -euo pipefail
+rm -f /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null || true
+cat >/etc/apt/sources.list <<EOF
+deb http://deb.debian.org/debian ${SUITE} main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian ${SUITE}-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security ${SUITE}-security main contrib non-free non-free-firmware
+EOF
+echo "Acquire::Languages \"none\";" >/etc/apt/apt.conf.d/99nolangs
+apt-get update -y
+apt-get install -y --no-install-recommends apt apt-utils dpkg-dev apt-rdepends gnupg
+tmp_list=$(mktemp)
+apt-rdepends $BASE_PACKAGES 2>/dev/null | awk "/^[A-Za-z0-9][A-Za-z0-9+.-]*$/{print}" | sort -u >"$tmp_list"
+: > /tmp/want.lock
+while read -r pkg; do cand=$(apt-cache policy "$pkg" | awk "/Candidate:/{print \$2}"); if [ -n "${cand:-}" ] && [ "$cand" != "(none)" ]; then echo "$pkg=$cand" >> /tmp/want.lock; fi; done <"$tmp_list"
+work=/tmp/aptdownload; install -d -m0777 "$work"; chown _apt:_apt "$work" 2>/dev/null || true
+runuser -u _apt -- bash -lc "cd \"$work\"; while read -r pv; do apt-get download \"\$pv\" || apt-get download \"\${pv%%=*}\"; done </tmp/want.lock"
+mkdir -p /repo/pool/main
+mv -f "$work"/*.deb /repo/pool/main/ 2>/dev/null || true
+for sec in main extra; do mkdir -p /repo/dists/${SUITE}/${sec}/binary-${ARCH} /repo/dists/${SUITE}/${sec}/binary-all; done
+apt-ftparchive packages /repo/pool/main > /repo/dists/${SUITE}/main/binary-${ARCH}/Packages
+gzip -9fk  /repo/dists/${SUITE}/main/binary-${ARCH}/Packages
+xz   -T0 -9e -f /repo/dists/${SUITE}/main/binary-${ARCH}/Packages
+cp -a /repo/dists/${SUITE}/main/binary-${ARCH}/Packages* /repo/dists/${SUITE}/main/binary-all/ || : > /repo/dists/${SUITE}/main/binary-all/Packages
+cat > /tmp/aptconf <<APTCONF
+Dir { ArchiveDir "/repo"; };
+Default { Packages::Compress ". gz xz"; };
+APTCONF
+apt-ftparchive -c /tmp/aptconf release /repo/dists/${SUITE} > /repo/dists/${SUITE}/Release
+chmod -R a+rX /repo
+echo "[OK] Dark repo ready"
+'
+  echo "[OK] built APT darksite at: $out"
 }
 
-# =============================================================================
-# ISO builder (cluster-specific)
-# =============================================================================
-# mk_iso <name> <postinstall_src> <iso_out> [static_ip]
-mk_iso() {
-  local name="$1" postinstall_src="$2" iso_out="$3" static_ip="${4:-}"
+darksite_stage_extras() {
+  local out="$1"; shift || true
+  [[ -n "${out:-}" ]] || { echo "[X] darksite_stage_extras: outdir required" >&2; return 2; }
+  mkdir -p "$out/extras"
+  [ "$#" -gt 0 ] || { echo "[i] darksite_stage_extras: no extras provided; skipping"; return 0; }
+  for src in "$@"; do
+    if [ -d "$src" ]; then rsync -a --delete "$src"/ "$out/extras/$(basename "$src")"/
+    elif [ -f "$src" ]; then install -D -m0644 "$src" "$out/extras/$(basename "$src")"
+    else echo "[WARN] darksite_stage_extras: missing path: $src" >&2; fi
+  done
+  chmod -R a+rX "$out/extras"
+  echo "[OK] staged extras into: $out/extras"
+}
 
+darksite_fetch_repos() {
+  local out="$1"; shift || true
+  [[ -n "${out:-}" ]] || { echo "[X] darksite_fetch_repos: outdir required" >&2; return 2; }
+  local vend="$out/extras/vendor"; mkdir -p "$vend"
+  local manifest="$vend/_manifest.tsv"; : > "$manifest"
+  while [ "$#" -gt 0 ]; do
+    local spec="$1"; shift
+    local url="${spec%@*}"; local ref=""; [[ "$spec" == *@* ]] && ref="${spec##*@}"
+    local name="$(basename "${url%.git}")"; local tmpd; tmpd="$(mktemp -d)"
+    echo "[*] Fetching $url ${ref:+(@ $ref)}"
+    git clone --depth 1 ${ref:+--branch "$ref"} "$url" "$tmpd/$name"
+    ( cd "$tmpd/$name" && git rev-parse HEAD ) > "$tmpd/$name/.git-rev"
+    tar -C "$tmpd" -czf "$vend/${name}.tar.gz" "$name"
+    echo -e "$name\t$url\t${ref:-HEAD}\t$(cat "$tmpd/$name/.git-rev")\t$(date -u +%F)" >> "$manifest"
+    rm -rf "$tmpd"
+  done
+  chmod -R a+rX "$vend"
+  echo "[OK] vendored repos -> $vend (manifest: $(wc -l < "$manifest") entries)"
+}
+
+# ==============================================================================
+# Secure Boot keys (db.key/db.crt) & UEFI blob placeholders
+# ==============================================================================
+emit_sb_keys_if_missing(){
+  mkdir -p "$(dirname "$SB_KEY")"
+  if [[ ! -s "$SB_KEY" || ! -s "$SB_CRT" ]]; then
+    log "[*] Generating TEMP Secure Boot signing keypair (db.key/db.crt) — replace with real keys!"
+    openssl req -new -x509 -newkey rsa:3072 -keyout "$SB_KEY" -out "$SB_CRT" -days 3650 -nodes -subj "/CN=unixbox-db/"
+    chmod 600 "$SB_KEY"; chmod 644 "$SB_CRT"
+  fi
+  if [[ ! -s "$UEFI_BLOB" ]]; then
+    warn "[!] No UEFI var-store blob at $UEFI_BLOB. You can still boot with platform keys or shim+MOK."
+  fi
+}
+
+# ==============================================================================
+# Dracut module: WireGuard pre-mount (Stage-0) — optional
+# ==============================================================================
+emit_wg_dracut(){
+  local out="$1"; mkdir -p "$out/45wg"
+  cat >"$out/45wg/module-setup.sh" <<'__WGSETUP__'
+#!/bin/bash
+check(){ return 0; }
+depends(){ echo "zfs network"; }
+install(){
+  inst_multiple wg wg-quick ip jq curl awk sed tpm2_unseal
+  inst_simple "$moddir/wg-pre-mount.sh" /sbin/wg-pre-mount.sh
+  mkdir -p "$initdir/etc/dracut/hooks/pre-mount"
+  printf '%s\n' '/sbin/wg-pre-mount.sh' > "$initdir/etc/dracut/hooks/pre-mount/10-wg.sh"
+}
+__WGSETUP__
+  chmod +x "$out/45wg/module-setup.sh"
+  cat >"$out/45wg/wg-pre-mount.sh" <<'__WGPRERUN__'
+#!/bin/sh
+set -eu
+TOKEN="$(curl -sX PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" http://169.254.169.254/latest/api/token || true)"
+IID="$(curl -sH "X-aws-ec2-metadata-token: ${TOKEN:-}" http://169.254.169.254/latest/dynamic/instance-identity/document || true)" || true
+if [ -s /etc/wireguard/wg0.key.sealed ]; then
+  tpm2_unseal -c /etc/wireguard/wg0.key.sealed -o /run/wg.key || true
+fi
+PRIV=""
+[ -s /run/wg.key ] && PRIV="$(cat /run/wg.key)" || PRIV="$(cat /etc/wireguard/wg0.key 2>/dev/null || echo '')"
+mkdir -p /etc/wireguard
+cat >/etc/wireguard/wg0.conf <<CFG
+[Interface]
+PrivateKey = ${PRIV}
+Address    = 10.77.0.10/32
+DNS        = 1.1.1.1
+MTU        = 1420
+SaveConfig = false
+[Peer]
+PublicKey  = REPLACE_HUB_PUBKEY
+Endpoint   = hub.example:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+CFG
+wg-quick up wg0 || true
+exit 0
+__WGPRERUN__
+  chmod +x "$out/45wg/wg-pre-mount.sh"
+}
+
+# ==============================================================================
+# ZFS boot-environment toolkit & hooks (installed in target by late.sh)
+# ==============================================================================
+emit_zfs_be_toolkit(){
+  local out_dir="$1"; mkdir -p "$out_dir/be"
+  # zfs-bectl
+  cat >"$out_dir/be/zfs-bectl" <<'__BECTL__'
+#!/usr/bin/env bash
+# zfs-bectl — tiny ZFS boot environment manager for systemd-boot + UKI
+set -euo pipefail
+SB_KEY="${SB_KEY:-/root/darksite/db.key}"
+SB_CRT="${SB_CRT:-/root/darksite/db.crt}"
+
+pool_bootfs() { zpool get -H -o value bootfs rpool; }
+current_be()  { pool_bootfs | awk -F/ '{print $3}'; }
+rootds_of()   { echo "rpool/ROOT/$1"; }
+
+build_sign_uki() {
+  local be="$1" rootds="rpool/ROOT/$1"
+  local kver
+  kver="$(uname -r || ls /lib/modules | sort -V | tail -1)"
+  local out="/boot/efi/EFI/Linux/${be}-${kver}.efi"
+  mkdir -p /boot/efi/EFI/Linux
+  ukify build \
+    --linux "/usr/lib/kernel/vmlinuz-${kver}" \
+    --initrd "/boot/initrd.img-${kver}" \
+    --cmdline "root=ZFS=${rootds} module.sig_enforce=1" \
+    --stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub \
+    --output "${out}"
+  if [ -s "$SB_KEY" ] && [ -s "$SB_CRT" ]; then
+    sbsign --key "$SB_KEY" --cert "$SB_CRT" --output "${out}" "${out}"
+  fi
+  cat >/boot/loader/entries/debian.conf <<EOF
+title   Debian ${be}
+linux   ${out#/boot/efi}
+EOF
+  bootctl update || true
+}
+
+cmd="${1:-}"; shift || true
+case "${cmd}" in
+  list)
+    zfs list -H -o name | awk '/^rpool\/ROOT\//'
+    ;;
+  create)
+    be="${1:?usage: zfs-bectl create <be-name>}"
+    cur="$(current_be)"
+    snap="pre-clone-$(date +%Y%m%d%H%M%S)"
+    zfs snapshot "rpool/ROOT/${cur}@${snap}"
+    zfs clone   "rpool/ROOT/${cur}@${snap}" "$(rootds_of "$be")"
+    zfs set canmount=noauto "$(rootds_of "$be")"
+    build_sign_uki "$be"
+    echo "[OK] created $be"
+    ;;
+  activate)
+    be="${1:?usage: zfs-bectl activate <be>}"
+    zpool set bootfs="$(rootds_of "$be")" rpool
+    build_sign_uki "$be"
+    echo "[OK] activated $be"
+    ;;
+  destroy)
+    be="${1:?usage: zfs-bectl destroy <be>}"
+    zfs destroy -r "$(rootds_of "$be")"
+    echo "[OK] destroyed $be"
+    ;;
+  rollback)
+    spec="${1:?usage: zfs-bectl rollback <be@snap>}"
+    be="${spec%@*}"; snap="${spec##*@}"
+    zfs rollback -r "$(rootds_of "$be")@${snap}"
+    build_sign_uki "$be"
+    echo "[OK] rolled back ${be} to @${snap}"
+    ;;
+  *)
+    echo "Usage: zfs-bectl {list|create|activate|destroy|rollback}" >&2
+    exit 2
+    ;;
+esac
+__BECTL__
+  chmod +x "$out_dir/be/zfs-bectl"
+
+  # APT snapshot hook
+  cat >"$out_dir/be/90-zfs-snapshots" <<'__SNAPHK__'
+DPKg::Pre-Invoke  { "if command -v zfs >/dev/null 2>&1; then root=$(zpool get -H -o value bootfs rpool 2>/dev/null); ts=$(date +%Y%m%d%H%M%S); [ -n \"$root\" ] && zfs snapshot ${root}@apt-pre-${ts} || true; fi"; };
+DPkg::Post-Invoke { "if command -v zfs >/dev/null 2>&1; then root=$(zpool get -H -o value bootfs rpool 2>/dev/null); ts=$(date +%Y%m%d%H%M%S); [ -n \"$root\" ] && zfs snapshot ${root}@apt-post-${ts} || true; fi"; };
+__SNAPHK__
+
+  # Kernel postinst UKI builder/sign
+  cat >"$out_dir/be/zz-uki-sign" <<'__UKIHOOK__'
+#!/bin/sh
+set -eu
+SB_KEY="${SB_KEY:-/root/darksite/db.key}"
+SB_CRT="${SB_CRT:-/root/darksite/db.crt}"
+POOL="${POOL:-rpool}"
+BE="$(zpool get -H -o value bootfs "${POOL}" | awk -F/ '{print $3}')"
+KVER="${1:-$(uname -r)}"
+OUT="/boot/efi/EFI/Linux/${BE}-${KVER}.efi"
+
+if command -v ukify >/dev/null 2>&1; then
+  ukify build \
+    --linux "/usr/lib/kernel/vmlinuz-${KVER}" \
+    --initrd "/boot/initrd.img-${KVER}" \
+    --cmdline "root=ZFS=${POOL}/ROOT/${BE} module.sig_enforce=1" \
+    --stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub \
+    --output "${OUT}" || true
+  if [ -s "$SB_KEY" ] && [ -s "$SB_CRT" ]; then
+    sbsign --key "$SB_KEY" --cert "$SB_CRT" --output "${OUT}" "${OUT}" || true
+  fi
+  cat >/boot/loader/entries/debian.conf <<EOF2
+title   Debian ${BE}
+linux   ${OUT#/boot/efi}
+EOF2
+  bootctl update || true
+fi
+exit 0
+__UKIHOOK__
+  chmod +x "$out_dir/be/zz-uki-sign"
+}
+
+# ==============================================================================
+# *** EARLY INSTALLER (RUNS INSIDE d-i) — minimal ext4; ZFS migration after 1st boot ***
+# ==============================================================================
+emit_early_zfs_install_be_script() {
+  local out="$1"; install -D -m0755 /dev/null "$out"
+  cat >"$out" <<"__EARLYZFS__"
+#!/bin/sh
+# d-i partman/early_command script — temporary ext4 root; convert to ZFS at first boot
+# Safe for BusyBox (no lsblk/apt-get in this phase)
+set -eu
+
+# ----- logging (works in d-i) -----
+LOG=/var/log/10-zfs.log
+umask 022
+mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
+# shellcheck disable=SC2069
+exec > >(busybox tee -a "$LOG") 2>&1
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export DEBIAN_FRONTEND=noninteractive
+
+log(){ printf '[EARLY] %s\n' "$*" >&2; }
+die(){ printf '[EARLY][X] %s\n' "$*" >&2; exit 1; }
+
+# Mini helpers (d-i safe)
+has(){ command -v "$1" >/dev/null 2>&1; }
+wait_for_block(){
+  dev="$1"; tries="${2:-120}"; i=0
+  while [ ! -b "$dev" ] && [ $i -lt "$tries" ]; do
+    sleep 0.25
+    has udevadm && udevadm settle || true
+    i=$((i+1))
+  done
+  [ -b "$dev" ] || die "block device did not appear: $dev"
+}
+
+# Make udebs available for parted/mkfs/debootstrap
+echo "deb [trusted=yes] file:/cdrom/darksite-udeb trixie main" > /etc/apt/sources.list
+# anna-install is present in d-i
+anna-install kmod-udeb parted-udeb util-linux-udeb e2fsprogs-udeb dosfstools-udeb debootstrap-udeb || true
+
+# Required tools in d-i
+PARTED="$(command -v parted || true)"; [ -n "$PARTED" ] || die "parted not available"
+MKFS_EXT4="$(command -v mkfs.ext4 || true)"; [ -n "$MKFS_EXT4" ] || die "mkfs.ext4 not available"
+MKFS_VFAT="$(command -v mkfs.vfat || true)"   # we’ll format ESP inside chroot where dosfstools exists
+
+# Pick the install disk (avoid lsblk)
+pick_disk() {
+  if has list-devices; then
+    list-devices disk | head -n1
+  else
+    for d in /dev/vda /dev/sda /dev/nvme0n1; do [ -b "$d" ] && { echo "$d"; return; }; done
+    # last resort: first “disk” entry in /proc/partitions
+    awk '/^ *[0-9]+ +[0-9]+ +[0-9]+ +[a-z]$/{print "/dev/"$4; exit}' /proc/partitions
+  fi
+}
+DISK="$(pick_disk)"
+[ -n "$DISK" ] || die "no disk found"
+log "Using disk: $DISK"
+
+# Ensure nothing mounted/used
+swapoff -a 2>/dev/null || true
+umount -l /target 2>/dev/null || true
+for p in 1 2 3 4; do umount -l "${DISK}${p}" 2>/dev/null || true; done
+
+# Wipe stale metadata & partition table (no sgdisk in d-i; use dd + wipefs if present)
+if has wipefs; then wipefs -a "$DISK" || true; fi
+dd if=/dev/zero of="$DISK" bs=1M count=8 conv=fsync 2>/dev/null || true
+sync
+has partprobe && partprobe "$DISK" || true
+has udevadm && udevadm settle || true
+sleep 1
+
+# Create GPT: 1) ESP 1GiB, 2) root (rest)
+$PARTED -s "$DISK" mklabel gpt
+# use MiB alignment and avoid 0-MiB rounding issues
+$PARTED -s "$DISK" mkpart ESP fat32 1MiB 1025MiB
+$PARTED -s "$DISK" set 1 esp on
+$PARTED -s "$DISK" mkpart root ext4 1025MiB 100%
+has partprobe && partprobe "$DISK" || true
+has udevadm && udevadm settle || true
+sleep 1
+
+ESP="${DISK}1"
+ROOT="${DISK}2"
+wait_for_block "$ESP" 120
+wait_for_block "$ROOT" 120
+
+# Make ext4 root (skip FAT here; do it in chroot with full dosfstools)
+modprobe ext4 2>/dev/null || true
+"$MKFS_EXT4" -F -L root "$ROOT"
+
+# Mount target root
+mkdir -p /target
+mount -t ext4 "$ROOT" /target || die "mount root failed"
+mkdir -p /target/root
+echo "$ESP" > /target/root/.esp-device
+
+# Minimal debootstrap (full apt is available inside the target)
+CODENAME=trixie
+debootstrap --arch=amd64 "$CODENAME" /target http://deb.debian.org/debian
+
+# Bind mounts for chroot phase
+mount --rbind /dev  /target/dev
+mount --rbind /proc /target/proc
+mount --rbind /sys  /target/sys
+
+# Do the “real” work inside the target (apt, bootctl, ESP format, one-shot ZFS conversion)
+chroot /target /usr/bin/env bash -eu <<'CHROOT'
+set -euxo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+# APT sources
+cat >/etc/apt/sources.list <<'EOF'
+deb http://deb.debian.org/debian trixie main contrib non-free-firmware
+deb http://security.debian.org/debian-security trixie-security main contrib non-free-firmware
+deb http://deb.debian.org/debian trixie-updates main contrib non-free-firmware
+EOF
+apt-get update -y
+apt-get install -y --no-install-recommends \
+  linux-image-amd64 linux-headers-amd64 \
+  openssh-server qemu-guest-agent \
+  systemd-boot-efi ca-certificates gnupg curl wget jq xz-utils \
+  efivar efitools sbsigntool mokutil systemd-ukify dracut dosfstools rsync
+
+# Format + mount the ESP
+ESP="$(cat /root/.esp-device)"
+mkfs.vfat -F 32 -n EFI "$ESP"
+mkdir -p /boot/efi
+mount -t vfat "$ESP" /boot/efi
+
+# Hostname and hosts
+echo master >/etc/hostname
+printf "127.0.0.1\tlocalhost\n127.0.1.1\tmaster\n" >/etc/hosts
+
+# Bootloader (temporary ext4 entry; ZFS later on first boot)
+bootctl install || true
+install -d -m755 /boot/loader/entries
+cat >/boot/loader/entries/ext4-temp.conf <<'EOF'
+title   Temporary ext4 root
+linux   /vmlinuz
+initrd  /initrd.img
+options root=LABEL=root rw
+EOF
+printf "default ext4-temp.conf\ntimeout 1\n" > /boot/loader/loader.conf
+
+# First-boot ZFS conversion (same as you had, kept intact & slightly hardened)
+install -d /usr/local/sbin
+cat >/usr/local/sbin/convert-to-zfs.sh <<'EOSH'
+#!/usr/bin/env bash
+set -euo pipefail
+LOG=/var/log/convert-to-zfs.log; exec > >(tee -a "$LOG") 2>&1
+echo "[C2Z] start"
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -y
+apt-get install -y --no-install-recommends dkms zfs-dkms zfsutils-linux zfs-dracut dracut systemd-ukify rsync
+
+# Detect the disk without lsblk (fallback to /proc/cmdline root=LABEL=root)
+ROOTSRC="$(findmnt -no SOURCE / || true)"
+DISK=""
+if [[ "$ROOTSRC" =~ ^/dev/(sd.|vd.|nvme[0-9]+n1)p?2$ ]]; then
+  DISK="/dev/${BASH_REMATCH[1]%p?}"
+else
+  # simple heuristic if findmnt is unhelpful
+  for d in /dev/vda /dev/sda /dev/nvme0n1; do [ -b "$d" ] && DISK="$d" && break; done
+fi
+[ -n "$DISK" ] || { echo "[C2Z] could not determine base disk"; exit 1; }
+
+ESP="${DISK}1"
+ZPART="${DISK}2"
+POOL="rpool"
+
+mkdir -p /mnt/newroot /mnt/oldroot
+mount -t tmpfs -o size=2G tmpfs /mnt/newroot
+rsync -aHx --exclude=/proc/* --exclude=/sys/* --exclude=/dev/* --exclude=/run/* / /mnt/newroot/
+mount --rbind /dev  /mnt/newroot/dev
+mount --rbind /proc /mnt/newroot/proc
+mount --rbind /sys  /mnt/newroot/sys
+pivot_root /mnt/newroot /mnt/newroot/mnt/oldroot || chroot /mnt/newroot /usr/bin/env bash -lc 'pivot_root /mnt/newroot /mnt/newroot/mnt/oldroot'
+
+chroot / /usr/bin/env bash -eux <<'EOT'
+umount -l /mnt/oldroot || true
+sleep 1
+
+zpool create -f \
+  -o ashift=12 \
+  -O compression=zstd \
+  -O acltype=posixacl -O xattr=sa \
+  -O atime=off -O relatime=on \
+  -O dnodesize=auto \
+  -O mountpoint=none rpool ${ZPART}
+
+zfs create -o mountpoint=none   rpool/ROOT
+zfs create -o canmount=noauto -o mountpoint=/ rpool/ROOT/debian
+zfs mount  rpool/ROOT/debian
+
+rsync -aHx --delete --exclude=/proc/* --exclude=/sys/* --exclude=/dev/* --exclude=/run/* / /rpool/ROOT/debian/
+
+mkdir -p /rpool/ROOT/debian/boot/efi
+mount ${ESP} /rpool/ROOT/debian/boot/efi
+ESP_UUID="$(blkid -s UUID -o value ${ESP})"
+echo "UUID=${ESP_UUID} /boot/efi vfat umask=0077 0 1" > /rpool/ROOT/debian/etc/fstab
+
+zpool set bootfs=rpool/ROOT/debian rpool
+
+chroot /rpool/ROOT/debian /usr/bin/env bash -eux <<'EOCH'
+KVER="$(uname -r || ls /lib/modules | sort -V | tail -1)"
+dracut --force "/boot/initrd.img-${KVER}" "${KVER}"
+mkdir -p /boot/efi/EFI/Linux
+ukify build \
+  --linux "/usr/lib/kernel/vmlinuz-${KVER}" \
+  --initrd "/boot/initrd.img-${KVER}" \
+  --cmdline "root=ZFS=rpool/ROOT/debian module.sig_enforce=1" \
+  --stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub \
+  --output "/boot/efi/EFI/Linux/debian-${KVER}.efi" || true
+bootctl update || true
+EOCH
+EOT
+
+echo "[C2Z] done; rebooting"
+systemctl --no-block reboot
+EOSH
+chmod +x /usr/local/sbin/convert-to-zfs.sh
+
+cat >/etc/systemd/system/convert-to-zfs.service <<'EOF'
+[Unit]
+Description=Convert temporary ext4 install to ZFS-on-root with Boot Environments
+After=network-online.target
+Wants=network-online.target
+ConditionFirstBoot=yes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/convert-to-zfs.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl enable convert-to-zfs.service
+systemctl enable ssh || true
+systemctl enable qemu-guest-agent || true
+CHROOT
+
+log "Temporary ext4 base installed; convert-to-zfs will run on first boot"
+exit 0
+
+__EARLYZFS__
+}
+
+# ==============================================================================
+# Installer boot menu + preseed
+# ==============================================================================
+write_bootloader_entries(){
+  local cust="$1"; local K="/install.amd/vmlinuz"; local I="/install.amd/initrd.gz"
+  [[ -f "$cust$K" ]] || { K="/debian-installer/amd64/linux"; I="/debian-installer/amd64/initrd.gz"; }
+  cat >"$cust/boot/grub/grub.cfg" <<GRUB
+set default=0
+set timeout=2
+menuentry "Install (auto, ZFS-on-root early, UEFI, BE-aware)" {
+    linux ${K} auto=true priority=critical \
+      preseed/file=/cdrom/preseed.cfg \
+      debconf/frontend=noninteractive \
+      locale=en_US.UTF-8 keyboard-configuration/xkb-keymap=us \
+      netcfg/choose_interface=auto --- quiet
+    initrd ${I}
+}
+GRUB
+}
+
+emit_preseed_minimal() {
+  local cust="${1:?custom-iso-root-required}"
+  local hostname="${2:-debian}"
+  local domain="${DOMAIN:-unixbox.net}"
+  {
+    echo '### Preseed — minimal; we do ZFS+bootstrap inside /cdrom/extras/10-zfs.sh'
+    echo 'd-i debian-installer/locale string en_US.UTF-8'
+    echo 'd-i console-setup/ask_detect boolean false'
+    echo 'd-i keyboard-configuration/xkb-keymap select us'
+    if [[ -z "${STATIC_IP:-}" ]]; then
+      cat <<'EOFNET'
+d-i netcfg/choose_interface select auto
+d-i netcfg/disable_autoconfig boolean false
+EOFNET
+    else
+      cat <<EOFNET
+d-i netcfg/choose_interface select auto
+d-i netcfg/disable_dhcp boolean true
+d-i netcfg/get_hostname string ${hostname}
+d-i netcfg/get_domain string ${domain}
+d-i netcfg/get_ipaddress string ${STATIC_IP}
+d-i netcfg/get_netmask string ${NETMASK:-255.255.255.0}
+d-i netcfg/get_gateway string ${GATEWAY:-10.100.10.1}
+d-i netcfg/get_nameservers string ${NAMESERVER:-1.1.1.1}
+EOFNET
+    fi
+    cat <<'EOFCOMMON'
+d-i debian-installer/locale string en_US.UTF-8
+d-i console-setup/ask_detect boolean false
+d-i keyboard-configuration/xkb-keymap select us
+d-i netcfg/choose_interface select auto
+d-i netcfg/disable_autoconfig boolean false
+d-i time/zone string Etc/UTC
+d-i clock-setup/ntp boolean true
+d-i apt-setup/use_mirror boolean false
+d-i passwd/root-login boolean false
+d-i passwd/user-fullname string debian
+d-i passwd/username string debian
+d-i passwd/user-password-crypted password *
+d-i user-setup/allow-password-weak boolean true
+d-i passwd/user-default-groups string sudo
+# Run our early partition/bootstrap script
+d-i partman/early_command string /bin/sh /cdrom/extras/10-zfs.sh
+tasksel tasksel/first multiselect standard
+# Keep the target tiny; ZFS arrives after first boot
+d-i pkgsel/include string openssh-server qemu-guest-agent
+popularity-contest popularity-contest/participate boolean false
+d-i grub-installer/skip boolean true
+d-i partman/confirm_write_new_label boolean true
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+d-i finish-install/reboot_in_progress note
+EOFCOMMON
+  } > "$cust/preseed.cfg"
+}
+
+# ==============================================================================
+# mk_iso — builds custom ISO (UEFI-only) with preseed + darksite + dracut + early ZFS(BE)
+# ==============================================================================
+mk_iso(){  # mk_iso <name> <postinstall_src> <iso_out> [static_ip]
+  local name="$1" postinstall_src="$2" iso_out="$3" static_ip="${4:-}"
   local build="$BUILD_ROOT/$name"
   local mnt="$build/mnt"
   local cust="$build/custom"
   local dark="$cust/darksite"
+  local suite="${DARKSITE_SUITE:-trixie}" arch="${ARCH:-amd64}"
+  rm -rf "$build"; mkdir -p "$mnt" "$cust" "$dark" "$cust/extras"
 
-  rm -rf "$build" 2>/dev/null || true
-  mkdir -p "$mnt" "$cust" "$dark"
+  emit_sb_keys_if_missing
+  emit_wg_dracut  "$dark"
+  emit_zfs_be_toolkit "$dark"
 
-  # Do the mount/copy inside a subshell with a *local* EXIT trap.
   (
     set -euo pipefail
-    trap 'umount -f "$mnt" 2>/dev/null || true' EXIT
+    trap "umount -f '$mnt' 2>/dev/null || true" EXIT
     mount -o loop,ro "$ISO_ORIG" "$mnt"
     cp -a "$mnt/"* "$cust/"
     cp -a "$mnt/.disk" "$cust/" 2>/dev/null || true
   )
 
-  # Darksite payload
   install -m0755 "$postinstall_src" "$dark/postinstall.sh"
 
-  cat > "$dark/bootstrap.service" <<'EOF'
+  cat >"$dark/bootstrap.service" <<'__BOOTSTRAPUNIT__'
 [Unit]
-Description=Initial Bootstrap Script (One-time)
-After=network-online.target
+Description=Initial Bootstrap Script (one-time)
+After=local-fs.target network-online.target
 Wants=network-online.target
 ConditionPathExists=/root/darksite/postinstall.sh
+ConditionPathIsExecutable=/root/darksite/postinstall.sh
 [Service]
 Type=oneshot
-Environment=SHELL=/bin/bash
-ExecStart=/bin/bash -lc '/root/darksite/postinstall.sh'
-StandardOutput=journal+console
-StandardError=journal+console
-TimeoutStartSec=0
+Environment=DEBIAN_FRONTEND=noninteractive
+WorkingDirectory=/root/darksite
+ExecStart=/usr/bin/env bash -lc '/root/darksite/postinstall.sh'
 RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
+__BOOTSTRAPUNIT__
+
+  cat >"$dark/late.sh" <<'__LATE__'
+#!/bin/sh
+set -eux
+mkdir -p /target/root/darksite
+cp -a /cdrom/darksite/. /target/root/darksite/ 2>/dev/null || true
+in-target install -D -m0644 /root/darksite/apt-arch.conf /etc/apt/apt.conf.d/00local-arch || true
+in-target install -D -m0755 /root/darksite/postinstall.sh /root/darksite/postinstall.sh || true
+in-target install -D -m0644 /root/darksite/bootstrap.service /etc/systemd/system/bootstrap.service || true
+in-target systemctl daemon-reload || true
+in-target systemctl enable bootstrap.service || true
+in-target apt-get purge -y grub-pc grub-efi-amd64 grub-common || true
+in-target bootctl install || true
+in-target install -D -m0755 /root/darksite/be/zfs-bectl /usr/local/sbin/zfs-bectl
+in-target install -D -m0644 /root/darksite/be/90-zfs-snapshots /etc/apt/apt.conf.d/90-zfs-snapshots
+in-target install -D -m0755 /root/darksite/be/zz-uki-sign /etc/kernel/postinst.d/zz-uki-sign
+in-target mkdir -p /usr/lib/dracut/modules.d/45wg
+in-target cp -a /root/darksite/45wg/. /usr/lib/dracut/modules.d/45wg/
+in-target dracut --force || true
+in-target /bin/systemctl --no-block poweroff || true
+exit 0
+__LATE__
+  chmod +x "$dark/late.sh"
+
+  mkdir -p "$dark/repo"
+  build_dark_repo "$dark/repo" "$arch" "$suite"
+  darksite_stage_extras "$dark/repo" "./scripts" "./patches"
+
+  cat >"$dark/apt-arch.conf" <<'__APTARCH__'
+APT::Architectures { "amd64"; };
+DPkg::Architectures { "amd64"; };
+Acquire::Languages "none";
+__APTARCH__
+
+  emit_preseed_minimal "$cust" "$name"
+  emit_early_zfs_install_be_script "$cust/extras/10-zfs.sh"
+  write_bootloader_entries "$cust"
+    write_bootloader_entries "$cust"
+
+  echo "======== /preseed.cfg ========";  sed -n '1,999p' "$cust/preseed.cfg"
+  echo "======== /extras/10-zfs.sh ==="; sed -n '1,999p' "$cust/extras/10-zfs.sh"
+
+  # >>> add udeb staging here <<<
+    # --- stage d-i udebs onto the ISO (offline, reproducible) ---
+  # --- stage d-i udebs onto the ISO (offline, reproducible, quiet) ---
+stage_di_udebs() {
+  local iso_root="$1" suite="${2:-trixie}" arch="${3:-amd64}"
+  local out="$iso_root/darksite-udeb"
+  echo "[udeb] staging udebs → $out (suite=$suite arch=$arch)"
+  rm -rf "$out"; mkdir -p "$out"
+
+  docker run --rm \
+    -e DEBIAN_FRONTEND=noninteractive \
+    -e SUITE="$suite" -e ARCH="$arch" \
+    -v "$out:/out" "debian:${suite}" bash -lc '
+set -euo pipefail
+
+# Keep apt quiet and single-sourced
+echo "Acquire::Languages \"none\";" >/etc/apt/apt.conf.d/99nolangs
+rm -f /etc/apt/sources.list.d/debian.sources 2>/dev/null || true
+cat >/etc/apt/sources.list <<EOF
+deb http://deb.debian.org/debian ${SUITE} main
+deb http://deb.debian.org/debian ${SUITE} main/debian-installer
 EOF
 
-  # Seed provision env + authorized key
-  {
-    echo "DOMAIN=${DOMAIN}"
-    echo "MASTER_LAN=${MASTER_LAN}"
-    echo "WG_ALLOWED_CIDR=${WG_ALLOWED_CIDR}"
-    echo "GUI_PROFILE=${GUI_PROFILE}"
-    echo "WG0_PORT=${WG0_PORT}"
-    echo "WG1_PORT=${WG1_PORT}"
-    echo "WG2_PORT=${WG2_PORT}"
-    echo "WG3_PORT=${WG3_PORT}"
-    echo "ALLOW_ADMIN_PASSWORD=${ALLOW_ADMIN_PASSWORD}"
-    echo "ADMIN_USER=${ADMIN_USER}"
-  } > "$dark/99-provision.conf"
+# Use root as the sandbox user to avoid the “unsandboxed as root” warning
+echo "APT::Sandbox::User \"root\";" >/etc/apt/apt.conf.d/00nosandbox
 
-  local auth_seed="$dark/authorized_keys.${ADMIN_USER}"
-  if [[ -n "${SSH_PUBKEY:-}" ]]; then
-    printf '%s\n' "$SSH_PUBKEY" > "$auth_seed"
-  elif [[ -n "${ADMIN_PUBKEY_FILE:-}" && -r "$ADMIN_PUBKEY_FILE" ]]; then
-    cat "$ADMIN_PUBKEY_FILE" > "$auth_seed"
-  else
-    : > "$auth_seed"
-  fi
-  chmod 0644 "$auth_seed"
+apt-get -qq update
+apt-get -qq install -y --no-install-recommends apt-utils dpkg-dev ca-certificates >/dev/null
 
-  # Preseed (DHCP vs static)
-  local NETBLOCK
-  if [[ -z "${static_ip}" ]]; then
-    NETBLOCK="d-i netcfg/choose_interface select auto
-d-i netcfg/disable_dhcp boolean false
-d-i netcfg/get_hostname string ${name}
-d-i netcfg/get_domain string ${DOMAIN}"
-  else
-    NETBLOCK="d-i netcfg/choose_interface select auto
-d-i netcfg/get_hostname string ${name}
-d-i netcfg/get_domain string ${DOMAIN}
-d-i netcfg/disable_dhcp boolean true
-d-i netcfg/get_ipaddress string ${static_ip}
-d-i netcfg/get_netmask string ${NETMASK}
-d-i netcfg/get_gateway string ${GATEWAY}
-d-i netcfg/get_nameservers string ${NAMESERVER}"
-  fi
+mkdir -p /out/pool/main /out/dists/${SUITE}/main/debian-installer/binary-${ARCH}
+work=/tmp/w; mkdir -p "$work"
+cd "$work"
 
-  cat > "$cust/preseed.cfg" <<EOF
-d-i debian-installer/locale string en_US.UTF-8
-d-i console-setup/ask_detect boolean false
-d-i keyboard-configuration/xkb-keymap select us
-$NETBLOCK
-d-i mirror/country string manual
-d-i mirror/http/hostname string deb.debian.org
-d-i mirror/http/directory string /debian
-d-i mirror/http/proxy string
-d-i passwd/root-login boolean true
-d-i passwd/root-password password root
-d-i passwd/root-password-again password root
-d-i passwd/make-user boolean false
-d-i time/zone string America/Vancouver
-d-i clock-setup/utc boolean true
-d-i clock-setup/ntp boolean true
-d-i partman-auto/method string lvm
-d-i partman-auto/choose_recipe select atomic
-d-i partman/confirm boolean true
-d-i partman/confirm_nooverwrite boolean true
-d-i partman/choose_partition select finish
-d-i partman-lvm/confirm boolean true
-d-i partman-lvm/confirm_nooverwrite boolean true
-d-i partman-auto-lvm/guided_size string max
-d-i pkgsel/run_tasksel boolean false
-d-i pkgsel/include string openssh-server
-d-i pkgsel/upgrade select none
-d-i pkgsel/ignore-recommends boolean true
-popularity-contest popularity-contest/participate boolean false
-d-i grub-installer/only_debian boolean true
-d-i grub-installer/bootdev string /dev/sda
-d-i preseed/late_command string \
-  mkdir -p /target/root/darksite ; \
-  cp -a /cdrom/darksite/* /target/root/darksite/ ; \
-  in-target chmod +x /root/darksite/postinstall.sh ; \
-  in-target cp /root/darksite/bootstrap.service /etc/systemd/system/bootstrap.service ; \
-  in-target mkdir -p /etc/environment.d ; \
-  in-target cp /root/darksite/99-provision.conf /etc/environment.d/99-provision.conf ; \
-  in-target chmod 0644 /etc/environment.d/99-provision.conf ; \
-  in-target systemctl daemon-reload ; \
-  in-target systemctl enable bootstrap.service ; \
-  in-target /bin/systemctl --no-block poweroff || true
-d-i cdrom-detect/eject boolean true
-d-i finish-install/reboot_in_progress note
-d-i finish-install/exit-installer boolean true
-d-i debian-installer/exit/poweroff boolean true
-EOF
+pkgs="busybox-udeb kmod-udeb udev-udeb parted-udeb util-linux-udeb e2fsprogs-udeb dosfstools-udeb debootstrap-udeb"
 
-  # Boot entries
-  local KARGS="auto=true priority=critical vga=788 preseed/file=/cdrom/preseed.cfg ---"
-  if [[ -f "$cust/isolinux/txt.cfg" ]]; then
-    cat >> "$cust/isolinux/txt.cfg" <<EOF
-label auto
-  menu label ^auto (preseed)
-  kernel /install.amd/vmlinuz
-  append initrd=/install.amd/initrd.gz $KARGS
-EOF
-    sed -i 's/^default .*/default auto/' "$cust/isolinux/isolinux.cfg" || true
-  fi
-  [[ -f "$cust/boot/grub/grub.cfg" ]] && \
-    sed -i "s#^\(\s*linux\s\+\S\+\s*\)#\1$KARGS #g" "$cust/boot/grub/grub.cfg" || true
+# Fetch udebs (quiet)
+for p in $pkgs; do apt-get -qq download "$p"; done
 
-  # Build ISO
-  xorriso -as mkisofs -o "$iso_out" -r -J -joliet-long -l \
-    -b isolinux/isolinux.bin -c isolinux/boot.cat \
-    -no-emul-boot -boot-load-size 4 -boot-info-table \
-    -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
-    -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat "$cust"
+shopt -s nullglob
+mv ./*.udeb /out/pool/main/
+
+# Minimal index for anna/apt in d-i
+apt-ftparchive packages /out/pool/main > /out/dists/${SUITE}/main/debian-installer/binary-${ARCH}/Packages
+gzip -9f /out/dists/${SUITE}/main/debian-installer/binary-${ARCH}/Packages
+
+chmod -R a+rX /out
+echo "[udeb] done"
+'
 }
 
-# =============================================================================
-# INLINE: postinstall-master.sh
-# =============================================================================
-emit_postinstall_master() {
+
+  stage_di_udebs "$cust" "trixie" "amd64"
+
+  stage_di_udebs "$cust"
+  # <<< end udeb staging >>>
+
+  local have_uefi=0 efi_img=""
+  [[ -f "$cust/boot/grub/efi.img" ]] && { efi_img="boot/grub/efi.img"; have_uefi=1; }
+  [[ -f "$cust/efi.img" ]] &&        { efi_img="efi.img";            have_uefi=1; }
+  [[ $have_uefi -eq 1 ]] || die "No UEFI image found inside ISO tree."
+
+  local args=( -as mkisofs -o "$iso_out" -r -J -joliet-long -l )
+  args+=( -eltorito-alt-boot -e "$efi_img" -no-emul-boot -isohybrid-gpt-basdat "$cust" )
+  echo "[mk_iso] Building (UEFI-only) → $iso_out"
+  xorriso "${args[@]}"
+  stat -c '[mk_iso] ISO size: %s bytes' "$iso_out" || true
+  sha256sum "$iso_out" || true
+}
+
+
+# ==============================================================================
+# MASTER POSTINSTALL — hardened base, WG hub, Sanoid/Syncoid, UKI signing
+# ==============================================================================
+emit_postinstall_master(){
   local out="$1"
-  cat >"$out" <<'EOS'
+  cat >"$out" <<'__MASTER__'
 #!/usr/bin/env bash
 set -euo pipefail
-[ -r /etc/environment.d/99-provision.conf ] && . /etc/environment.d/99-provision.conf
-
+LOG="/var/log/postinstall-master.log"; exec > >(tee -a "$LOG") 2>&1
+log(){ echo "[INFO] $(date '+%F %T') - $*"; }
+die(){ echo "[ERROR] $*" >&2; exit 1; }
 INSTALL_ANSIBLE="${INSTALL_ANSIBLE:-yes}"
 INSTALL_SEMAPHORE="${INSTALL_SEMAPHORE:-try}"
-
-GUI_PROFILE="${GUI_PROFILE:-rdp-minimal}"
+GUI_PROFILE="${GUI_PROFILE:-server}"
 ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-no}"
 ADMIN_USER="${ADMIN_USER:-todd}"
-
 DOMAIN="${DOMAIN:-unixbox.net}"
-MASTER_LAN="${MASTER_LAN:-10.100.10.224}"
-
-# WG planes
-WG0_IP="${WG0_IP:-10.77.0.1/16}"; WG0_PORT="${WG0_PORT:-51820}"
-WG1_IP="${WG1_IP:-10.78.0.1/16}"; WG1_PORT="${WG1_PORT:-51821}"
-WG2_IP="${WG2_IP:-10.79.0.1/16}"; WG2_PORT="${WG2_PORT:-51822}"
-WG3_IP="${WG3_IP:-10.80.0.1/16}"; WG3_PORT="${WG3_PORT:-51823}"
+MASTER_LAN="${MASTER_LAN:-10.100.10.124}"
+WG0_IP="${WG0_IP:-10.77.0.1/16}";  WG0_PORT="${WG0_PORT:-51820}"
+WG1_IP="${WG1_IP:-10.78.0.1/16}";  WG1_PORT="${WG1_PORT:-51821}"
+WG2_IP="${WG2_IP:-10.79.0.1/16}";  WG2_PORT="${WG2_PORT:-51822}"
+WG3_IP="${WG3_IP:-10.80.0.1/16}";  WG3_PORT="${WG3_PORT:-51823}"
 WG_ALLOWED_CIDR="${WG_ALLOWED_CIDR:-10.77.0.0/16,10.78.0.0/16,10.79.0.0/16,10.80.0.0/16}"
-
-LOG="/var/log/postinstall-master.log"
-exec > >(tee -a "$LOG") 2>&1
-trap 'echo "[X] Failed at line $LINENO" >&2' ERR
-log(){ echo "[INFO] $(date '+%F %T') - $*"; }
-
+SB_KEY="/root/darksite/db.key"
+SB_CRT="/root/darksite/db.crt"
+dpkg_script_sanity_fix(){ shopt -s nullglob; for f in /var/lib/dpkg/info/*.{preinst,postinst,prerm,postrm,config}; do
+  [ -f "$f" ] || continue; head -n1 "$f" | grep -q '^#!' || sed -i '1s|.*|#!/bin/sh|' "$f"; sed -i 's/\r$//' "$f" 2>/dev/null || true; chmod +x "$f" || true; done; dpkg --configure -a || true; }
 ensure_base(){
   export DEBIAN_FRONTEND=noninteractive
+  install -d -m0755 /var/lib/apt/lists; install -d -m0700 -o _apt -g root /var/lib/apt/lists/partial || true
+  dpkg_script_sanity_fix
   cat >/etc/apt/sources.list <<'EOF'
+deb [trusted=yes] file:/root/darksite/repo trixie main
 deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
 deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
 EOF
+  install -D -m0644 /root/darksite/apt-arch.conf /etc/apt/apt.conf.d/00local-arch
   for i in 1 2 3; do apt-get update -y && break || sleep $((i*3)); done
   apt-get install -y --no-install-recommends \
-    sudo openssh-server curl wget ca-certificates gnupg jq xxd unzip tar \
-    iproute2 iputils-ping ethtool tcpdump net-tools \
-    nftables wireguard-tools \
-    chrony rsyslog qemu-guest-agent dbus-x11 || true
-
-  echo wireguard >/etc/modules-load.d/wireguard.conf || true
-  modprobe wireguard 2>/dev/null || true
-  systemctl enable --now qemu-guest-agent chrony rsyslog ssh || true
-
-  cat >/etc/sysctl.d/99-wg.conf <<'EOF'
-net.ipv4.ip_forward=1
-net.ipv4.conf.all.rp_filter=2
-net.ipv4.conf.default.rp_filter=2
-net.ipv6.conf.all.disable_ipv6=1
-net.ipv6.conf.default.disable_ipv6=1
-EOF
-  sysctl --system || true
+    build-essential dkms linux-headers-$(uname -r) \
+    zfs-dkms zfsutils-linux zfs-dracut dracut systemd-boot-efi systemd-ukify sbsigntool tpm2-tools efitools efivar mokutil \
+    sudo openssh-server curl wget ca-certificates gnupg jq unzip tar iproute2 iputils-ping ethtool tcpdump net-tools \
+    wireguard-tools nftables chrony rsyslog qemu-guest-agent nfs-common \
+    bpftrace bpfcc-tools perf-tools-unstable sysstat strace lsof debsums \
+    sanoid syncoid prometheus prometheus-node-exporter grafana nginx || true
+  # (Re)build initrd with dracut to ensure zfs modules included
+  dracut --force "/boot/initrd.img-$(uname -r)" "$(uname -r)" || true
+  systemctl enable --now ssh chrony rsyslog qemu-guest-agent || true
 }
-
+secureboot_enroll_and_enable() {
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y --no-install-recommends efitools efivar mokutil || true
+  local WORK=/root/sbwork; mkdir -p "$WORK"
+  cp -f "$SB_CRT" "$WORK/db.crt"; cp -f "$SB_KEY" "$WORK/db.key"
+  cert-to-efi-sig-list -g "$(uuidgen)" "$WORK/db.crt" "$WORK/db.esl"
+  openssl req -new -x509 -newkey rsa:3072 -subj "/CN=unixbox-KEK/" -keyout "$WORK/kek.key" -out "$WORK/kek.crt" -days 3650 -nodes
+  cert-to-efi-sig-list -g "$(uuidgen)" "$WORK/kek.crt" "$WORK/kek.esl"
+  openssl req -new -x509 -newkey rsa:3072 -subj "/CN=unixbox-PK/"  -keyout "$WORK/pk.key"  -out "$WORK/pk.crt"  -days 3650 -nodes
+  cert-to-efi-sig-list -g "$(uuidgen)" "$WORK/pk.crt"  "$WORK/pk.esl"
+  sign-efi-sig-list -k "$WORK/pk.key"  -c "$WORK/pk.crt"  PK  "$WORK/pk.esl"  "$WORK/pk.auth"
+  sign-efi-sig-list -k "$WORK/pk.key"  -c "$WORK/pk.crt"  KEK "$WORK/kek.esl" "$WORK/kek.auth"
+  sign-efi-sig-list -k "$WORK/kek.key" -c "$WORK/kek.crt" db  "$WORK/db.esl"  "$WORK/db.auth"
+  efi-updatevar -f "$WORK/pk.auth"  PK; efi-updatevar -f "$WORK/kek.auth" KEK; efi-updatevar -f "$WORK/db.auth"  db
+  mokutil --sb-state || true; echo -n -e '\x01' > "$WORK/sbon"; efi-updatevar -f "$WORK/sbon" SecureBoot || true
+  build_sign_current_uki; echo "[SB] PK/KEK/DB enrolled; Secure Boot ON; UKI signed."
+}
 ensure_users_harden(){
-  local SEED="/root/darksite/authorized_keys.${ADMIN_USER}"
-  local PUB=""; [[ -s "$SEED" ]] && PUB="$(head -n1 "$SEED")"
-
-  mk(){ local u="$1" k="$2";
-    id -u "$u" &>/dev/null || useradd -m -s /bin/bash "$u";
-    install -d -m700 -o "$u" -g "$u" "/home/$u/.ssh";
-    touch "/home/$u/.ssh/authorized_keys"; chmod 600 "/home/$u/.ssh/authorized_keys"
-    chown -R "$u:$u" "/home/$u/.ssh"
-    [[ -n "$k" ]] && grep -qxF "$k" "/home/$u/.ssh/authorized_keys" || { [[ -n "$k" ]] && printf '%s\n' "$k" >> "/home/$u/.ssh/authorized_keys"; }
-    install -d -m755 /etc/sudoers.d; printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$u" >"/etc/sudoers.d/90-$u"; chmod 0440 "/etc/sudoers.d/90-$u";
-  }
-  mk "$ADMIN_USER" "$PUB"
-
-  id -u ansible &>/dev/null || useradd -m -s /bin/bash -G sudo ansible
-  install -d -m700 -o ansible -g ansible /home/ansible/.ssh
-  [[ -s /home/ansible/.ssh/id_ed25519 ]] || runuser -u ansible -- ssh-keygen -t ed25519 -N "" -f /home/ansible/.ssh/id_ed25519
-  install -m0644 /home/ansible/.ssh/id_ed25519.pub /home/ansible/.ssh/authorized_keys
-  chown ansible:ansible /home/ansible/.ssh/authorized_keys; chmod 600 /home/ansible/.ssh/authorized_keys
-
+  local PUB=""; [ -s "/root/darksite/authorized_keys.${ADMIN_USER}" ] && PUB="$(head -n1 "/root/darksite/authorized_keys.${ADMIN_USER}")"
+  id -u "$ADMIN_USER" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$ADMIN_USER"
+  install -d -m700 -o "$ADMIN_USER" -g "$ADMIN_USER" "/home/$ADMIN_USER/.ssh"
+  touch "/home/$ADMIN_USER/.ssh/authorized_keys"; chmod 600 "/home/$ADMIN_USER/.ssh/authorized_keys"
+  [[ -n "$PUB" ]] && grep -qxF "$PUB" "/home/$ADMIN_USER/.ssh/authorized_keys" || { [[ -n "$PUB" ]] && printf '%s\n' "$PUB" >> "/home/$ADMIN_USER/.ssh/authorized_keys"; }
+  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$ADMIN_USER" >"/etc/sudoers.d/90-$ADMIN_USER"; chmod 0440 "/etc/sudoers.d/90-$ADMIN_USER"
   install -d -m755 /etc/ssh/sshd_config.d
   cat >/etc/ssh/sshd_config.d/00-listen.conf <<EOF
 ListenAddress ${MASTER_LAN}
 ListenAddress $(echo "${WG0_IP}" | cut -d/ -f1)
-AllowUsers ${ADMIN_USER} ansible
+AllowUsers ${ADMIN_USER}
 EOF
   cat >/etc/ssh/sshd_config.d/99-hard.conf <<'EOF'
 PermitRootLogin no
@@ -491,52 +982,38 @@ PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
 EOF
   if [ "${ALLOW_ADMIN_PASSWORD}" = "yes" ]; then
-    cat >/etc/ssh/sshd_config.d/10-admin-lan-password.conf <<EOF
+cat >/etc/ssh/sshd_config.d/10-admin-lan-password.conf <<EOF
 Match User ${ADMIN_USER} Address 10.100.10.0/24
     PasswordAuthentication yes
 EOF
   fi
-  install -d -m755 /etc/systemd/system/ssh.service.d
-  cat >/etc/systemd/system/ssh.service.d/wg-order.conf <<'EOF'
-[Unit]
-After=wg-quick@wg0.service network-online.target
-Wants=wg-quick@wg0.service network-online.target
-EOF
-  (sshd -t && systemctl daemon-reload && systemctl restart ssh) || true
+  systemctl restart ssh || true
 }
-
-wg_prepare_conf(){
-  local ifn="$1" ipcidr="$2" port="$3"
+wg_hub(){
   install -d -m700 /etc/wireguard
-  local _old_umask; _old_umask="$(umask)"
-  umask 077
-  [[ -f /etc/wireguard/${ifn}.key ]] || wg genkey | tee /etc/wireguard/${ifn}.key | wg pubkey >/etc/wireguard/${ifn}.pub
-  cat >/etc/wireguard/${ifn}.conf <<EOF
+  for IFN in wg0 wg1 wg2 wg3; do
+    [ -f /etc/wireguard/${IFN}.key ] || wg genkey | tee /etc/wireguard/${IFN}.key | wg pubkey >/etc/wireguard/${IFN}.pub
+  done
+  cat >/etc/wireguard/wg0.conf <<EOF
 [Interface]
-Address    = ${ipcidr}
-ListenPort = ${port}
-PrivateKey = $(cat /etc/wireguard/${ifn}.key)
+Address    = ${WG0_IP}
+ListenPort = ${WG0_PORT}
+PrivateKey = $(cat /etc/wireguard/wg0.key)
 SaveConfig = true
-MTU = 1420
+MTU        = 1420
 EOF
-  chmod 600 /etc/wireguard/${ifn}.conf
-  umask "$_old_umask"
+  for n in 1 2 3; do
+  cat >/etc/wireguard/wg${n}.conf <<EOF
+[Interface]
+Address    = $(eval echo \${WG${n}_IP})
+ListenPort = $(eval echo \${WG${n}_PORT})
+PrivateKey = $(cat /etc/wireguard/wg${n}.key)
+SaveConfig = true
+MTU        = 1420
+EOF
+  done
+  systemctl enable --now wg-quick@wg0 wg-quick@wg1 wg-quick@wg2 wg-quick@wg3 || true
 }
-wg_try_systemd(){ systemctl daemon-reload || true; systemctl enable --now "wg-quick@${1}" || return 1; }
-wg_bringup_manual(){
-  local ifn="$1" ipcidr="$2" port="$3"
-  ip link show "$ifn" >/dev/null 2>&1 || ip link add "$ifn" type wireguard || true
-  ip -4 addr show dev "$ifn" | grep -q "${ipcidr%/*}" || ip addr add "$ipcidr" dev "$ifn" || true
-  wg set "$ifn" listen-port "$port" private-key /etc/wireguard/${ifn}.key || true
-  ip link set "$ifn" mtu 1420 up || true
-}
-wg_up_all(){
-  wg_prepare_conf wg0 "$WG0_IP" "$WG0_PORT"; wg_try_systemd wg0 || wg_bringup_manual wg0 "$WG0_IP" "$WG0_PORT"
-  wg_prepare_conf wg1 "$WG1_IP" "$WG1_PORT"; wg_try_systemd wg1 || wg_bringup_manual wg1 "$WG1_IP" "$WG1_PORT"
-  wg_prepare_conf wg2 "$WG2_IP" "$WG2_PORT"; wg_try_systemd wg2 || wg_bringup_manual wg2 "$WG2_IP" "$WG2_PORT"
-  wg_prepare_conf wg3 "$WG3_IP" "$WG3_PORT"; wg_try_systemd wg3 || wg_bringup_manual wg3 "$WG3_IP" "$WG3_PORT"
-}
-
 nft_firewall(){
   cat >/etc/nftables.conf <<'EOF'
 #!/usr/sbin/nft -f
@@ -549,11 +1026,8 @@ table inet filter {
     ip protocol icmp accept
     tcp dport 22 accept
     udp dport { 51820,51821,51822,51823 } accept
-    tcp dport 3389 accept
-    iifname "wg0" accept
-    iifname "wg1" accept
-    iifname "wg2" accept
-    iifname "wg3" accept
+    tcp dport { 80, 443, 9090, 9100 } accept
+    iifname { "wg0","wg1","wg2","wg3" } accept
   }
   chain forward { type filter hook forward priority 0; policy drop; ct state established,related accept; }
   chain output  { type filter hook output  priority 0; policy accept; }
@@ -562,430 +1036,239 @@ EOF
   nft -f /etc/nftables.conf || true
   systemctl enable --now nftables || true
 }
+sanoid_baseline(){
+  mkdir -p /etc/sanoid
+  cat >/etc/sanoid/sanoid.conf <<'EOC'
+[rpool/ROOT/*]
+  use_template = be
+[rpool/home]
+  use_template = user
 
-hub_seed(){
-  install -d -m0755 /srv/wg
-  cat >/srv/wg/hub.env <<EOF
-WG0_IP=${WG0_IP}
-WG1_IP=${WG1_IP}
-WG2_IP=${WG2_IP}
-WG3_IP=${WG3_IP}
-WG0_PORT=${WG0_PORT}
-WG1_PORT=${WG1_PORT}
-WG2_PORT=${WG2_PORT}
-WG3_PORT=${WG3_PORT}
-WG_ALLOWED_CIDR=${WG_ALLOWED_CIDR}
-HUB_LAN=${MASTER_LAN}
-WG0_PUB=$(cat /etc/wireguard/wg0.pub 2>/dev/null || echo "")
-WG1_PUB=$(cat /etc/wireguard/wg1.pub 2>/dev/null || echo "")
-WG2_PUB=$(cat /etc/wireguard/wg2.pub 2>/dev/null || echo "")
-WG3_PUB=$(cat /etc/wireguard/wg3.pub 2>/dev/null || echo "")
-EOF
-  chmod 0644 /srv/wg/hub.env
-  : >/srv/wg/ENROLL_ENABLED
+[template_be]
+  daily = 7
+  autosnap = yes
+  autoprune = yes
+
+[template_user]
+  daily = 7
+  autosnap = yes
+  autoprune = yes
+EOC
+  systemctl enable --now sanoid.timer || true
 }
-
-helper_tools(){
-  cat >/usr/local/sbin/wg-add-peer <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-PUB="${1:-}"; ADDR="${2:-}"; IFN="${3:-wg0}"
-FLAG="/srv/wg/ENROLL_ENABLED"
-[[ -f "$FLAG" ]] || { echo "[X] enrollment closed"; exit 2; }
-[[ -n "$PUB" && -n "$ADDR" ]] || { echo "usage: wg-add-peer <pubkey> <ip/cidr> [ifname]"; exit 1; }
-if wg show "$IFN" peers | grep -qx "$PUB"; then
-  wg set "$IFN" peer "$PUB" allowed-ips "$ADDR"
-else
-  wg set "$IFN" peer "$PUB" allowed-ips "$ADDR" persistent-keepalive 25
-fi
-CONF="/etc/wireguard/${IFN}.conf"
-if ! grep -q "$PUB" "$CONF"; then
-  printf "\n[Peer]\nPublicKey  = %s\nAllowedIPs = %s\nPersistentKeepalive = 25\n" "$PUB" "$ADDR" >> "$CONF"
-fi
-systemctl reload "wg-quick@${IFN}" 2>/dev/null || true
-echo "[+] added $PUB $ADDR on $IFN"
+syncoid_stub(){ install -d -m755 /etc/syncoid; cat >/etc/syncoid/targets.conf <<'EOF'
+# Example:
+# syncoid rpool/ROOT/debian remotehost:rpool/backup/debian
 EOF
-  chmod 0755 /usr/local/sbin/wg-add-peer
-
-  cat >/usr/local/sbin/wg-enrollment <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-FLAG="/srv/wg/ENROLL_ENABLED"
-case "${1:-}" in
-  on)  : >"$FLAG"; echo "enrollment enabled";;
-  off) rm -f "$FLAG"; echo "enrollment disabled";;
-  *) echo "usage: wg-enrollment on|off"; exit 1;;
-esac
-EOF
-  chmod 0755 /usr/local/sbin/wg-enrollment
-
-  cat >/usr/local/sbin/register-minion <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-GROUP="${1:-}"; HOST="${2:-}"; IP="${3:-}"
-[[ -z "$GROUP" || -z "$HOST" || -z "$IP" ]] && { echo "usage: $0 <group> <hostname> <wg1-ip>"; exit 2; }
-ANS_HOSTS="/etc/ansible/hosts"
-mkdir -p "$(dirname "$ANS_HOSTS")"; touch "$ANS_HOSTS"
-if ! grep -q "^\[${GROUP}\]" "$ANS_HOSTS"; then echo -e "\n[${GROUP}]" >> "$ANS_HOSTS"; fi
-sed -i "/^${HOST}\b/d" "$ANS_HOSTS"
-echo "${HOST} ansible_host=${IP}" >> "$ANS_HOSTS"
-mkdir -p /etc/prometheus/targets.d
-TGT="/etc/prometheus/targets.d/${GROUP}.json"
-[[ -s "$TGT" ]] || echo '[]' > "$TGT"
-tmp="$(mktemp)"; jq --arg target "${IP}:9100" 'map(select(.targets|index($target)|not)) + [{"targets":[$target]}]' "$TGT" > "$tmp" && mv "$tmp" "$TGT"
-if pidof prometheus >/dev/null 2>&1; then pkill -HUP prometheus || systemctl reload prometheus || true; fi
-echo "[OK] Registered ${HOST} (${IP}) in group ${GROUP}"
-EOF
-  chmod 0755 /usr/local/sbin/register-minion
 }
-
-telemetry_stack(){
-  local wg1_ip; wg1_ip="$(ip -4 addr show dev wg1 | awk '/inet /{print $2}' | cut -d/ -f1)"
-  [[ -n "$wg1_ip" ]] || wg1_ip="${WG1_IP%/*}"
-
-  apt-get install -y prometheus prometheus-node-exporter grafana || true
-
+seal_wg_key(){
+  command -v tpm2_createprimary >/dev/null 2>&1 || return 0
+  umask 077
+  [ -s /etc/wireguard/wg0.key ] || (wg genkey > /etc/wireguard/wg0.key && chmod 600 /etc/wireguard/wg0.key)
+  tpm2_createprimary -C o -G rsa -c /root/wg_prim.ctx
+  tpm2_create -G aes -u /root/wg_key.pub -r /root/wg_key.priv -i /etc/wireguard/wg0.key -C /root/wg_prim.ctx -L sha256:0,2,7
+  tpm2_load -C /root/wg_prim.ctx -u /root/wg_key.pub -r /root/wg_key.priv -c /etc/wireguard/wg0.key.sealed
+}
+build_sign_current_uki(){
+  local kver="$(uname -r)"
+  local rootds="$(zpool get -H -o value bootfs rpool 2>/dev/null || echo 'rpool/ROOT/debian')"
+  local out="/boot/efi/EFI/Linux/debian-${kver}.efi"
+  ukify build \
+    --linux /usr/lib/kernel/vmlinuz-${kver} \
+    --initrd /boot/initrd.img-${kver} \
+    --cmdline "root=ZFS=${rootds} module.sig_enforce=1" \
+    --stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub \
+    --output "${out}" || true
+  if [ -s "$SB_KEY" ] && [ -s "$SB_CRT" ]; then sbsign --key "$SB_KEY" --cert "$SB_CRT" --output "${out}" "${out}"; fi
+  bootctl update || true
+}
+prom_graf_stub(){
+  local ip="$(ip -4 addr show dev wg1 | awk '/inet /{print $2}' | cut -d/ -f1)"; [ -n "$ip" ] || ip="${WG1_IP%/*}"
   install -d -m755 /etc/prometheus/targets.d
   cat >/etc/prometheus/prometheus.yml <<'EOF'
-global:
-  scrape_interval: 15s
-  evaluation_interval: 30s
-scrape_configs:
-  - job_name: 'node'
-    file_sd_configs:
-      - files:
-        - /etc/prometheus/targets.d/*.json
+global: { scrape_interval: 15s, evaluation_interval: 30s }
+scrape_configs: [{ job_name: "node", file_sd_configs: [{ files: ["/etc/prometheus/targets.d/*.json"] }] }]
 EOF
-
-  install -d -m755 /etc/systemd/system/prometheus.service.d
+  install -d -m755 /etc/systemd/system/{prometheus.service.d,prometheus-node-exporter.service.d}
   cat >/etc/systemd/system/prometheus.service.d/override.conf <<EOF
 [Service]
 Environment=
 ExecStart=
-ExecStart=/usr/bin/prometheus --web.listen-address=${wg1_ip}:9090 --config.file=/etc/prometheus/prometheus.yml
+ExecStart=/usr/bin/prometheus --web.listen-address=${ip}:9090 --config.file=/etc/prometheus/prometheus.yml
 EOF
-  install -d -m755 /etc/systemd/system/prometheus-node-exporter.service.d
   cat >/etc/systemd/system/prometheus-node-exporter.service.d/override.conf <<EOF
 [Service]
 Environment=
 ExecStart=
-ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=${wg1_ip}:9100 --web.disable-exporter-metrics
+ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=${ip}:9100 --web.disable-exporter-metrics
 EOF
-  cat >/etc/systemd/system/prometheus.service.d/wg-order.conf <<'EOF'
-[Unit]
-After=wg-quick@wg1.service network-online.target
-Wants=wg-quick@wg1.service network-online.target
-EOF
-  cat >/etc/systemd/system/prometheus-node-exporter.service.d/wg-order.conf <<'EOF'
-[Unit]
-After=wg-quick@wg1.service network-online.target
-Wants=wg-quick@wg1.service network-online.target
-EOF
-
   systemctl daemon-reload
   systemctl enable --now prometheus prometheus-node-exporter || true
-
-  install -d /etc/grafana/provisioning/{datasources,dashboards}
+  install -d /etc/grafana/provisioning/{datasources,dashboards} /var/lib/grafana/dashboards/node
   cat >/etc/grafana/provisioning/datasources/prom.yaml <<EOF
 apiVersion: 1
-datasources:
-- name: Prometheus
-  type: prometheus
-  access: proxy
-  url: http://${wg1_ip}:9090
-  isDefault: true
+datasources: [{ name: Prometheus, type: prometheus, access: proxy, url: http://${ip}:9090, isDefault: true }]
 EOF
-  install -d -m755 /var/lib/grafana/dashboards/node
   cat >/etc/grafana/provisioning/dashboards/node.yaml <<'EOF'
 apiVersion: 1
-providers:
-- name: node
-  orgId: 1
-  folder: "Node"
-  type: file
-  options:
-    path: /var/lib/grafana/dashboards/node
+providers: [{ name: node, orgId: 1, folder: "Node", type: file, options: { path: /var/lib/grafana/dashboards/node } }]
 EOF
   cat >/var/lib/grafana/dashboards/node/quick-node.json <<'EOF'
-{"annotations":{"list":[{"builtIn":1,"datasource":{"type":"grafana","uid":"grafana"},"enable":true,"hide":true,"iconColor":"rgba(0, 211, 255, 1)","name":"Annotations & Alerts","type":"dashboard"}]},"editable":true,"graphTooltip":0,"panels":[{"type":"stat","title":"Up targets","datasource":"Prometheus","targets":[{"expr":"up"}]}],"schemaVersion":39,"style":"dark","time":{"from":"now-15m","to":"now"},"title":"Quick Node","version":1}
+{"panels":[{"type":"stat","title":"Up targets","datasource":"Prometheus","targets":[{"expr":"up"}]}],"title":"Quick Node","schemaVersion":39}
 EOF
   systemctl enable --now grafana-server || true
 }
-
-control_stack(){
-  apt-get install -y --no-install-recommends salt-master salt-api salt-common || true
-  install -d -m0755 /etc/salt/master.d
-  cat >/etc/salt/master.d/network.conf <<'EOF'
-interface: 10.77.0.1
-ipv6: False
-publish_port: 4505
-ret_port: 4506
-EOF
-  cat >/etc/salt/master.d/api.conf <<'EOF'
-rest_cherrypy:
-  host: 10.77.0.1
-  port: 8000
-  disable_ssl: True
-EOF
-  install -d -m0755 /etc/systemd/system/salt-master.service.d
-  cat >/etc/systemd/system/salt-master.service.d/override.conf <<'EOF'
-[Unit]
-After=wg-quick@wg0.service network-online.target
-Wants=wg-quick@wg0.service network-online.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now salt-master salt-api || true
-
-  if [ "${INSTALL_ANSIBLE}" = "yes" ]; then apt-get install -y ansible || true; fi
-
-  if [ "${INSTALL_SEMAPHORE}" != "no" ]; then
-    install -d -m755 /etc/semaphore
-    if curl -fsSL -o /usr/local/bin/semaphore https://github.com/ansible-semaphore/semaphore/releases/latest/download/semaphore_linux_amd64 2>/dev/null; then
-      chmod +x /usr/local/bin/semaphore
-      cat >/etc/systemd/system/semaphore.service <<'EOF'
-[Unit]
-Description=Ansible Semaphore
-After=wg-quick@wg0.service network-online.target
-Wants=wg-quick@wg0.service
-[Service]
-ExecStart=/usr/local/bin/semaphore server --listen 10.77.0.1:3000
-Restart=always
-User=root
-[Install]
-WantedBy=multi-user.target
-EOF
-      systemctl daemon-reload; systemctl enable --now semaphore || true
-    else
-      echo "[WARN] Semaphore binary not fetched; install later." >&2
-    fi
-  fi
-}
-
-desktop_gui() {
-  case "${GUI_PROFILE}" in
-    rdp-minimal)
-      apt-get install -y --no-install-recommends xorg xrdp xorgxrdp openbox xterm firefox-esr || true
-      if [[ -f /etc/xrdp/xrdp.ini ]]; then
-        sed -i 's/^\s*port\s*=.*/; &/' /etc/xrdp/xrdp.ini || true
-        if grep -qE '^\s*address=' /etc/xrdp/xrdp.ini; then
-          sed -i "s|^\s*address=.*|address=${MASTER_LAN}|" /etc/xrdp/xrdp.ini
-        else
-          sed -i "1i address=${MASTER_LAN}" /etc/xrdp/xrdp.ini
-        fi
-        if grep -qE '^\s*;port=' /etc/xrdp/xrdp.ini; then
-          sed -i 's|^\s*;port=.*|port=3389|' /etc/xrdp/xrdp.ini
-        elif grep -qE '^\s*port=' /etc/xrdp/xrdp.ini; then
-          sed -i 's|^\s*port=.*|port=3389|' /etc/xrdp/xrdp.ini
-        else
-          sed -i '1i port=3389' /etc/xrdp/xrdp.ini
-        fi
-      fi
-      cat >/etc/xrdp/startwm.sh <<'EOSH'
-#!/bin/sh
-export DESKTOP_SESSION=openbox
-export XDG_SESSION_DESKTOP=openbox
-export XDG_CURRENT_DESKTOP=openbox
-[ -x /usr/bin/openbox-session ] && exec /usr/bin/openbox-session
-[ -x /usr/bin/openbox ] && exec /usr/bin/openbox
-exec /usr/bin/xterm
-EOSH
-      chmod +x /etc/xrdp/startwm.sh
-      systemctl daemon-reload || true
-      systemctl enable --now xrdp || true
-      ;;
-    wayland-gdm-minimal)
-      apt-get install -y --no-install-recommends gdm3 gnome-shell gnome-session-bin firefox-esr || true
-      systemctl enable --now gdm3 || true
-      ;;
-  esac
-}
-
-main_master(){
-  log "BEGIN postinstall (master hub)"
-  export DEBIAN_FRONTEND=noninteractive
-  ensure_base
-  ensure_users_harden
-
-  # Salt/Grafana repos
-  install -d -m0755 /etc/apt/keyrings
-  curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public -o /etc/apt/keyrings/salt-archive-keyring.pgp || true
-  chmod 0644 /etc/apt/keyrings/salt-archive-keyring.pgp || true
-  gpg --dearmor </etc/apt/keyrings/salt-archive-keyring.pgp >/etc/apt/keyrings/salt-archive-keyring.gpg 2>/dev/null || true
-  chmod 0644 /etc/apt/keyrings/salt-archive-keyring.gpg || true
-  curl -fsSL https://github.com/saltstack/salt-install-guide/releases/latest/download/salt.sources -o /etc/apt/sources.list.d/salt.sources || true
-  sed -i 's#/etc/apt/keyrings/salt-archive-keyring\.pgp#/etc/apt/keyrings/salt-archive-keyring.pgp#' /etc/apt/sources.list.d/salt.sources || true
-  cat >/etc/apt/preferences.d/salt-pin-1001 <<'EOF'
-Package: salt-*
-Pin: version 3006.*
-Pin-Priority: 1001
-EOF
-  curl -fsSL https://apt.grafana.com/gpg.key | gpg --dearmor -o /etc/apt/keyrings/grafana.gpg || true
-  chmod 0644 /etc/apt/keyrings/grafana.gpg || true
-  cat >/etc/apt/sources.list.d/grafana.sources <<'EOF'
-Types: deb
-URIs: https://apt.grafana.com
-Suites: stable
-Components: main
-Signed-By: /etc/apt/keyrings/grafana.gpg
-EOF
-  apt-get update -y || true
-
-  wg_up_all
-  nft_firewall
-  hub_seed
-  helper_tools
-  telemetry_stack
-  control_stack
-  desktop_gui
-
-  systemctl disable --now openipmi.service 2>/dev/null || true
-  systemctl mask openipmi.service 2>/dev/null || true
-
-  log "Master hub ready."
+verify_uefi_only(){ test -d /sys/firmware/efi || die "System is not booted via UEFI (no /sys/firmware/efi)"; bootctl status || true; ls -l /boot/efi/EFI || true; }
+main(){
+  log "BEGIN master postinstall"
+  ensure_base; ensure_users_harden; wg_hub; nft_firewall; sanoid_baseline; syncoid_stub; seal_wg_key
+  secureboot_enroll_and_enable; prom_graf_stub; verify_uefi_only
   systemctl disable bootstrap.service || true
-  systemctl daemon-reload || true
-  log "Powering off in 2s..."
-  (sleep 2; systemctl --no-block poweroff) & disown
+  log "Master ready; poweroff in 2s"; (sleep 2; systemctl --no-block poweroff) & disown
 }
-main_master
-EOS
+main
+__MASTER__
 }
 
-# =============================================================================
-# INLINE: postinstall-minion.sh (AUTO-ENROLL ALL 4 WG)
-# =============================================================================
-emit_postinstall_minion() {
+# ==============================================================================
+# MINION POSTINSTALL
+# ==============================================================================
+emit_postinstall_minion(){
   local out="$1"
-  cat >"$out" <<'EOS'
+  cat >"$out" <<'__MINION__'
 #!/usr/bin/env bash
-set -euo pipefail
+# minion postinstall (UEFI-only, dracut + UKI, ZFS utils from darksite when present)
+set -Eeuo pipefail
+LOG="/var/log/minion-postinstall.log"; exec > >(tee -a "$LOG") 2>&1
+
+log(){ echo "[INFO] $(date '+%F %T') - $*"; }
+die(){ echo "[ERROR] $*" >&2; exit 1; }
+
+# ---- tunables via env or /etc/environment.d/99-provision.conf ----
 ADMIN_USER="${ADMIN_USER:-todd}"
 MY_GROUP="${MY_GROUP:-prom}"
 
-WG0_WANTED="${WG0_WANTED:-10.77.0.2/32}"
-WG1_WANTED="${WG1_WANTED:-10.78.0.2/32}"
-WG2_WANTED="${WG2_WANTED:-10.79.0.2/32}"
-WG3_WANTED="${WG3_WANTED:-10.80.0.2/32}"
+# Secure Boot signing materials staged by ISO (optional but preferred)
+SB_KEY="/root/darksite/db.key"
+SB_CRT="/root/darksite/db.crt"
 
-LOG="/var/log/minion-postinstall.log"
-exec > >(tee -a "$LOG") 2>&1
-trap 'echo "[X] Failed at line $LINENO" >&2' ERR
-log(){ echo "[INFO] $(date '+%F %T') - $*"; }
-
-HUB_ENV_CANDIDATES=(/root/cluster-seed/hub.env /srv/wg/hub.env /root/darksite/cluster-seed/hub.env)
+# --- helpers -------------------------------------------------------
+dpkg_script_sanity_fix(){
+  shopt -s nullglob
+  for f in /var/lib/dpkg/info/*.{preinst,postinst,prerm,postrm,config}; do
+    [ -f "$f" ] || continue
+    head -n1 "$f" | grep -q '^#!' || sed -i '1s|.*|#!/bin/sh|' "$f"
+    sed -i 's/\r$//' "$f" 2>/dev/null || true
+    chmod +x "$f" || true
+  done
+  dpkg --configure -a || true
+}
 
 ensure_base(){
   export DEBIAN_FRONTEND=noninteractive
+
+  dpkg_script_sanity_fix
+
+  # Prefer local darksite if present; fall back to Debian online (harmless on an offline darksite).
   cat >/etc/apt/sources.list <<'EOF'
+deb [trusted=yes] file:/root/darksite/repo trixie main
 deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
 deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
 deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
 EOF
-  apt-get update -y || true
+  install -D -m0644 /root/darksite/apt-arch.conf /etc/apt/apt.conf.d/00local-arch || true
+
+  for i in 1 2 3; do
+    apt-get update -y && break || sleep $((i*3))
+  done
+
+  # NOTE: dkms + zfs-dkms + headers needed to build ZFS for the *running* kernel
   apt-get install -y --no-install-recommends \
-    sudo openssh-server curl wget ca-certificates gnupg jq unzip xxd tar \
-    iproute2 iputils-ping ethtool tcpdump net-tools \
-    wireguard wireguard-tools nftables \
-    prometheus-node-exporter chrony rsyslog qemu-guest-agent || true
+    sudo openssh-server curl wget ca-certificates gnupg jq unzip tar xz-utils \
+    iproute2 iputils-ping ethtool tcpdump net-tools wireguard-tools nftables \
+    chrony rsyslog qemu-guest-agent debsums \
+    build-essential dkms linux-headers-$(uname -r) \
+    zfsutils-linux zfs-dkms zfs-initramfs dracut systemd-boot-efi systemd-ukify-efi \
+    efitools efivar mokutil sbsigntool ukify \
+    sanoid syncoid || true
+
   systemctl enable --now ssh chrony rsyslog qemu-guest-agent || true
 }
 
-ensure_admin_user(){
-  local SEED="/root/darksite/authorized_keys.${ADMIN_USER}"
-  local PUB=""; [[ -s "$SEED" ]] && PUB="$(head -n1 "$SEED")"
+ensure_users(){
+  local PUB=""
+  if [ -s "/root/darksite/authorized_keys.${ADMIN_USER}" ]; then
+    PUB="$(head -n1 "/root/darksite/authorized_keys.${ADMIN_USER}")"
+  fi
+
   id -u "${ADMIN_USER}" >/dev/null 2>&1 || useradd -m -s /bin/bash "${ADMIN_USER}"
+
   install -d -m700 -o "${ADMIN_USER}" -g "${ADMIN_USER}" "/home/${ADMIN_USER}/.ssh"
   touch "/home/${ADMIN_USER}/.ssh/authorized_keys"
-  [[ -n "$PUB" ]] && grep -qxF "$PUB" "/home/${ADMIN_USER}/.ssh/authorized_keys" || { [[ -n "$PUB" ]] && echo "$PUB" >> "/home/${ADMIN_USER}/.ssh/authorized_keys"; }
+  if [ -n "$PUB" ] && ! grep -qxF "$PUB" "/home/${ADMIN_USER}/.ssh/authorized_keys"; then
+    echo "$PUB" >> "/home/${ADMIN_USER}/.ssh/authorized_keys"
+  fi
   chown -R "${ADMIN_USER}:${ADMIN_USER}" "/home/${ADMIN_USER}/.ssh"
   chmod 600 "/home/${ADMIN_USER}/.ssh/authorized_keys"
+
+  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$ADMIN_USER" >/etc/sudoers.d/90-${ADMIN_USER}
+  chmod 0440 /etc/sudoers.d/90-${ADMIN_USER}
 }
 
+# ---------- hub bootstrap (wg, ports, allowlist) ----------
 read_hub(){
-  for F in "${HUB_ENV_CANDIDATES[@]}"; do [[ -r "$F" ]] && . "$F"; done
-  : "${HUB_LAN:?missing HUB_LAN in hub.env}"
-  : "${WG0_PUB:=}"
-  : "${WG0_PORT:?missing WG0_PORT in hub.env}"
-  : "${WG_ALLOWED_CIDR:?missing WG_ALLOWED_CIDR in hub.env}"
+  for f in \
+    /root/cluster-seed/hub.env \
+    /srv/wg/hub.env \
+    /root/darksite/cluster-seed/hub.env \
+    /root/darksite/hub.env
+  do
+    if [ -r "$f" ]; then HUB_ENV="$f"; break; fi
+  done
+  [ -n "${HUB_ENV:-}" ] || die "missing hub.env (looked in: /root/cluster-seed, /srv/wg, /root/darksite/cluster-seed, /root/darksite)"
+
+  # Safe-ish env import (key=val; ignore comments/blank)
+  eval "$(
+    awk -F= '
+      /^[[:space:]]*#/ {next}
+      /^[[:space:]]*$/ {next}
+      /^[A-Za-z0-9_]+=/ {
+        key=$1; $1=""; sub(/^=/,"");
+        val=$0; gsub(/^[ \t]+|[ \t]+$/,"",val);
+        gsub(/"/,"\\\"",val);
+        print key "=\"" val "\""
+      }' "$HUB_ENV"
+  )"
+
+  : "${WG0_PORT:?missing WG0_PORT}"
+  : "${WG_ALLOWED_CIDR:?missing WG_ALLOWED_CIDR}"
+  : "${HUB_LAN:?missing HUB_LAN}"
+  : "${WG0_PUB:?missing WG0_PUB}"
 }
 
-wg_setup_all(){
+wg_setup(){
   install -d -m700 /etc/wireguard
   umask 077
-  for IFN in wg0 wg1 wg2 wg3; do
-    [[ -f /etc/wireguard/${IFN}.key ]] || wg genkey | tee /etc/wireguard/${IFN}.key | wg pubkey >/etc/wireguard/${IFN}.pub
-  done
-  # wg0 peers the hub (control plane)
+  [ -f /etc/wireguard/wg0.key ] || wg genkey | tee /etc/wireguard/wg0.key | wg pubkey >/etc/wireguard/wg0.pub
+
   cat >/etc/wireguard/wg0.conf <<EOF
 [Interface]
-Address    = ${WG0_WANTED}
 PrivateKey = $(cat /etc/wireguard/wg0.key)
-ListenPort = 0
-DNS = 1.1.1.1
-MTU = 1420
+Address    = ${WG0_WANTED:-10.77.0.10/32}
+DNS        = 1.1.1.1
+MTU        = 1420
+
 [Peer]
 PublicKey  = ${WG0_PUB}
 Endpoint   = ${HUB_LAN}:${WG0_PORT}
 AllowedIPs = ${WG_ALLOWED_CIDR}
 PersistentKeepalive = 25
 EOF
-  for n in 1 2 3; do
-    cat >/etc/wireguard/wg${n}.conf <<EOF
-[Interface]
-Address    = $(eval echo \${WG${n}_WANTED})
-PrivateKey = $(cat /etc/wireguard/wg${n}.key)
-ListenPort = 0
-MTU = 1420
-EOF
-  done
-  chmod 600 /etc/wireguard/*.conf
+
   systemctl enable --now wg-quick@wg0 || true
-  for ifn in wg1 wg2 wg3; do systemctl enable --now "wg-quick@${ifn}" || true; done
-
-  install -d -m755 /etc/ssh/sshd_config.d
-  cat >/etc/ssh/sshd_config.d/00-listen.conf <<EOF
-ListenAddress $(echo "${WG0_WANTED}" | cut -d/ -f1)
-EOF
-  cat >/etc/ssh/sshd_config.d/99-hard.conf <<EOF
-PermitRootLogin no
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-X11Forwarding no
-AllowTcpForwarding no
-PubkeyAuthentication yes
-AuthorizedKeysFile .ssh/authorized_keys
-AllowUsers ${ADMIN_USER}
-EOF
-  install -d -m755 /etc/systemd/system/ssh.service.d
-  cat >/etc/systemd/system/ssh.service.d/wg-order.conf <<'EOF'
-[Unit]
-After=wg-quick@wg0.service network-online.target
-Wants=wg-quick@wg0.service network-online.target
-EOF
-  (sshd -t && systemctl daemon-reload && systemctl restart ssh) || true
 }
 
-auto_enroll_with_hub(){
-  log "Auto-enrolling this node on hub (wg0..wg3)..."
-  local SSHOPTS="-o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=6"
-  local ifn wanted pub ok any_ok=0
-  for ifn in wg0 wg1 wg2 wg3; do
-    case "$ifn" in
-      wg0) wanted="${WG0_WANTED:-}";; wg1) wanted="${WG1_WANTED:-}";;
-      wg2) wanted="${WG2_WANTED:-}";; wg3) wanted="${WG3_WANTED:-}";;
-    esac
-    pub="$(cat "/etc/wireguard/${ifn}.pub" 2>/dev/null || true)"
-    if [[ -z "$pub" || -z "$wanted" ]]; then log "[WARN] skip ${ifn}: missing pubkey/wanted"; continue; fi
-    ok=0
-    for u in "${ADMIN_USER}" root; do
-      if ssh $SSHOPTS "$u@${HUB_LAN}" "sudo /usr/local/sbin/wg-add-peer '$pub' '$wanted' '$ifn'" 2>/dev/null; then ok=1; break; fi
-    done
-    [[ "$ok" -eq 1 ]] && { log "[OK] enrolled ${ifn} (${wanted})"; any_ok=1; } || log "[WARN] ${ifn} enrollment failed"
-  done
-  [[ "$any_ok" -eq 1 ]] || log "[WARN] No interfaces enrolled; continuing"
-}
-
-nft_min(){
+nft_base(){
   cat >/etc/nftables.conf <<'EOF'
 #!/usr/sbin/nft -f
 flush ruleset
@@ -997,132 +1280,108 @@ table inet filter {
     ip protocol icmp accept
     tcp dport 22 accept
     iifname "wg0" accept
-    iifname "wg1" accept
-    iifname "wg2" accept
-    iifname "wg3" accept
-    udp dport { 51820,51821,51822,51823 } accept
   }
-  chain output  { type filter hook output  priority 0; policy accept; }
   chain forward { type filter hook forward priority 0; policy drop; ct state established,related accept; }
+  chain output  { type filter hook output  priority 0; policy accept; }
 }
 EOF
-  nft -f /etc/nftables.conf
-  systemctl enable --now nftables
+  nft -f /etc/nftables.conf || true
+  systemctl enable --now nftables || true
 }
 
-install_salt_minion(){
-  install -d -m0755 /etc/apt/keyrings
-  curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public -o /etc/apt/keyrings/salt-archive-keyring.pgp || true
-  chmod 0644 /etc/apt/keyrings/salt-archive-keyring.pgp || true
-  gpg --dearmor </etc/apt/keyrings/salt-archive-keyring.pgp >/etc/apt/keyrings/salt-archive-keyring.gpg 2>/dev/null || true
-  chmod 0644 /etc/apt/keyrings/salt-archive-keyring.gpg || true
-  cat >/etc/apt/sources.list.d/salt.sources <<'EOF'
-Types: deb
-URIs: https://packages.broadcom.com/artifactory/saltproject-deb
-Suites: stable
-Components: main
-Signed-By: /etc/apt/keyrings/salt-archive-keyring.pgp
-EOF
-  cat >/etc/apt/preferences.d/salt-pin-1001 <<'EOF'
-Package: salt-*
-Pin: version 3006.*
-Pin-Priority: 1001
-EOF
-  apt-get update -y || true
-  apt-get install -y salt-minion salt-common || true
+sanoid_minion(){
+  mkdir -p /etc/sanoid
+  cat >/etc/sanoid/sanoid.conf <<'EOC'
+[rpool/ROOT/*]
+  use_template = be
+[rpool/home]
+  use_template = user
 
-  local hub_ip; hub_ip="$(echo "${WG0_WANTED}" | cut -d/ -f1)"; hub_ip="${hub_ip%.*}.1"
-  mkdir -p /etc/salt/minion.d
-  cat >/etc/salt/minion.d/master.conf <<EOF
-master: ${hub_ip}
-ipv6: False
-source_interface_name: wg0
-EOF
-  install -d -m0755 /etc/systemd/system/salt-minion.service.d
-  cat >/etc/systemd/system/salt-minion.service.d/wg-order.conf <<'EOF'
-[Unit]
-After=wg-quick@wg0.service network-online.target
-Wants=wg-quick@wg0.service network-online.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now salt-minion || true
+[template_be]
+  daily = 7
+  autosnap = yes
+  autoprune = yes
+
+[template_user]
+  daily = 7
+  autosnap = yes
+  autoprune = yes
+EOC
+  systemctl enable --now sanoid.timer || true
 }
 
-bind_node_exporter(){
-  local ip; ip="$(ip -4 addr show dev wg1 | awk '/inet /{print $2}' | cut -d/ -f1)"
-  install -d -m755 /etc/systemd/system/prometheus-node-exporter.service.d
-  cat >/etc/systemd/system/prometheus-node-exporter.service.d/override.conf <<EOF
-[Service]
-Environment=
-ExecStart=
-ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=${ip}:9100 --web.disable-exporter-metrics
-EOF
-  cat >/etc/systemd/system/prometheus-node-exporter.service.d/wg-order.conf <<'EOF'
-[Unit]
-After=wg-quick@wg1.service network-online.target
-Wants=wg-quick@wg1.service network-online.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now prometheus-node-exporter || true
-}
+# -------- UKI build/sign for ZFS root (dracut handles initrd) --------
+build_sign_uki(){
+  local kver
+  kver="$(uname -r || ls /lib/modules | sort -V | tail -1)"
+  local rootds
+  rootds="$(zpool get -H -o value bootfs rpool 2>/dev/null || echo 'rpool/ROOT/debian')"
+  local out="/boot/efi/EFI/Linux/debian-${kver}.efi"
 
-register_with_master(){
-  local ip host
-  ip="$(ip -4 addr show dev wg1 | awk '/inet /{print $2}' | cut -d/ -f1)"
-  host="$(hostname -s)"
-  ssh -q -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null "${ADMIN_USER}@${HUB_LAN}" \
-    "sudo /usr/local/sbin/register-minion '${MY_GROUP}' '${host}' '${ip}'" \
-    || ssh -q -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null root@"${HUB_LAN}" \
-    "/usr/local/sbin/register-minion '${MY_GROUP}' '${host}' '${ip}'" || true
-}
+  # Ensure dracut initramfs exists for this kernel
+  dracut --force "/boot/initrd.img-${kver}" "${kver}" || true
 
-maybe_storage_bits(){
-  if [[ "${MY_GROUP}" == "storage" ]]; then
-    apt-get install -y zfsutils-linux targetcli-fb || true
-    modprobe zfs 2>/dev/null || true
+  mkdir -p /boot/efi/EFI/Linux
+  ukify build \
+    --linux "/usr/lib/kernel/vmlinuz-${kver}" \
+    --initrd "/boot/initrd.img-${kver}" \
+    --cmdline "root=ZFS=${rootds} module.sig_enforce=1" \
+    --stub /usr/lib/systemd/boot/efi/linuxx64.efi.stub \
+    --output "${out}" || true
+
+  if [ -s "$SB_KEY" ] && [ -s "$SB_CRT" ]; then
+    sbsign --key "$SB_KEY" --cert "$SB_CRT" --output "${out}" "${out}" || true
   fi
+
+  install -d -m755 /boot/loader/entries
+  cat >/boot/loader/entries/debian.conf <<EOF
+title   Debian (ZFS, ${kver})
+linux   ${out#/boot/efi}
+EOF
+  printf "default debian.conf\ntimeout 1\n" >/boot/loader/loader.conf
+  bootctl update || true
+}
+
+verify_uefi_only(){
+  test -d /sys/firmware/efi || die "System not booted via UEFI (no /sys/firmware/efi)"
+  bootctl status || true
+  ls -l /boot/efi/EFI || true
 }
 
 main(){
-  log "BEGIN postinstall (minion)"
+  log "minion bootstrap start"
   ensure_base
-  ensure_admin_user
+  ensure_users
   read_hub
-  wg_setup_all
-  auto_enroll_with_hub
-  nft_min
-  bind_node_exporter
-  install_salt_minion
-  register_with_master
-  maybe_storage_bits
-  systemctl disable --now openipmi.service 2>/dev/null || true
-  systemctl mask openipmi.service 2>/dev/null || true
-  log "minion ready."
-  systemctl disable bootstrap.service || true
-  systemctl daemon-reload || true
-  log "Powering off in 2s..."
-  (sleep 2; systemctl --no-block poweroff) &
+  wg_setup
+  nft_base
+  sanoid_minion
+  build_sign_uki
+  verify_uefi_only
+  log "minion bootstrap done; poweroff in 2s"
+  (sleep 2; systemctl --no-block poweroff) & disown
 }
 main
-EOS
+__MINION__
 }
 
-# =============================================================================
-# WRAPS MINION PAYLOAD WITH EMBEDDED HUB.ENV + WANTED ADDRS
-# =============================================================================
-emit_minion_wrapper() {
-  # Usage: emit_minion_wrapper <outfile> <group> <wg0/32> <wg1/32> <wg2/32> <wg3/32>
+# ==============================================================================
+# MINION WRAPPER — embeds hub.env + env vars + drops/minion postinstall & runs it
+# ==============================================================================
+emit_minion_wrapper(){
   local out="$1" group="$2" wg0="$3" wg1="$4" wg2="$5" wg3="$6"
   local hub_src="$BUILD_ROOT/hub/hub.env"
-  [[ -s "$hub_src" ]] || { err "emit_minion_wrapper: missing hub.env at $hub_src"; return 1; }
+  if [[ ! -s "$hub_src" ]]; then
+    err "emit_minion_wrapper: missing hub.env at $hub_src"
+    return 1
+  fi
 
-  cat >"$out" <<'EOSH'
+  cat >"$out" <<'__WRAPHEAD__'
 #!/usr/bin/env bash
-set -euo pipefail
-LOG="/var/log/minion-wrapper.log"
-exec > >(tee -a "$LOG") 2>&1
-trap 'echo "[X] Wrapper failed at line $LINENO" >&2' ERR
-EOSH
+set -Eeuo pipefail
+LOG="/var/log/minion-wrapper.log"; exec > >(tee -a "$LOG") 2>&1
+trap 'echo "[WRAP] failed: ${BASH_COMMAND@Q}  (line ${LINENO})" >&2' ERR
+__WRAPHEAD__
 
   {
     echo 'mkdir -p /root/darksite/cluster-seed'
@@ -1132,548 +1391,257 @@ EOSH
     echo 'chmod 0644 /root/darksite/cluster-seed/hub.env'
   } >>"$out"
 
-  cat >>"$out" <<EOSH
+  cat >>"$out" <<__WRAPENV__
 install -d -m0755 /etc/environment.d
-{
-  echo "ADMIN_USER=\${ADMIN_USER:-$ADMIN_USER}"
-  echo "MY_GROUP=${group}"
-  echo "WG0_WANTED=${wg0}"
-  echo "WG1_WANTED=${wg1}"
-  echo "WG2_WANTED=${wg2}"
-  echo "WG3_WANTED=${wg3}"
-} >> /etc/environment.d/99-provision.conf
+cat >/etc/environment.d/99-provision.conf <<EOF
+ADMIN_USER=$ADMIN_USER
+MY_GROUP=${group}
+WG0_WANTED=${wg0}
+WG1_WANTED=${wg1}
+WG2_WANTED=${wg2}
+WG3_WANTED=${wg3}
+EOF
 chmod 0644 /etc/environment.d/99-provision.conf
-EOSH
+__WRAPENV__
 
-  cat >>"$out" <<'EOSH'
+  cat >>"$out" <<'__WRAPBODY__'
 install -d -m0755 /root/darksite
 cat >/root/darksite/postinstall-minion.sh <<'EOMINION'
-EOSH
+__WRAPBODY__
 
-  local __tmp_minion
-  __tmp_minion="$(mktemp)"
-  emit_postinstall_minion "$__tmp_minion"
-  cat "$__tmp_minion" >>"$out"
-  rm -f "$__tmp_minion"
+  local tmp; tmp="$(mktemp)"
+  emit_postinstall_minion "$tmp"
+  cat "$tmp" >>"$out"
+  rm -f "$tmp"
 
-  cat >>"$out" <<'EOSH'
+  cat >>"$out" <<'__WRAPTAIL__'
 EOMINION
+perl -0777 -pe 's/\r\n/\n/g; s/\r/\n/g' -i /root/darksite/postinstall-minion.sh
+sed -i '1s|.*|#!/usr/bin/env bash|' /root/darksite/postinstall-minion.sh
 chmod +x /root/darksite/postinstall-minion.sh
-bash -lc '/root/darksite/postinstall-minion.sh'
-EOSH
+/usr/bin/env bash /root/darksite/postinstall-minion.sh
+__WRAPTAIL__
+
   chmod +x "$out"
 }
 
-# =============================================================================
-# Master enrollment seed (avoid race before fetching hub.env)
-# =============================================================================
-# ensure_master_enrollment_seed <vmid>
-ensure_master_enrollment_seed() {
-  local vmid="$1"
-  pmx_guest_exec "$vmid" /bin/bash -lc "$(cat <<'EOS'
-set -euo pipefail
-# Pull in any provision variables if present
-. /etc/environment.d/99-provision.conf 2>/dev/null || true
+# ==============================================================================
+# BUILD ALL ISOS — master first (to harvest hub.env), then minions
+# ==============================================================================
+build_all_isos(){
+  log "[*] Building all ISOs into $BUILD_ROOT"
+  mkdir -p "$BUILD_ROOT/hub"
 
-mkdir -p /srv/wg
-# Create hub.env if missing (include current env defaults)
-if [ ! -s /srv/wg/hub.env ]; then
-  cat > /srv/wg/hub.env <<'EOF'
-WG0_IP=${WG0_IP:-10.77.0.1/16}
-WG1_IP=${WG1_IP:-10.78.0.1/16}
-WG2_IP=${WG2_IP:-10.79.0.1/16}
-WG3_IP=${WG3_IP:-10.80.0.1/16}
-WG0_PORT=${WG0_PORT:-51820}
-WG1_PORT=${WG1_PORT:-51821}
-WG2_PORT=${WG2_PORT:-51822}
-WG3_PORT=${WG3_PORT:-51823}
-WG_ALLOWED_CIDR=${WG_ALLOWED_CIDR:-10.77.0.0/16,10.78.0.0/16,10.79.0.0/16,10.80.0.0/16}
-HUB_LAN=${MASTER_LAN:-10.100.10.224}
+  # ---- master ISO: produces hub.env on first boot ----
+  local master_payload master_iso
+  master_payload="$(mktemp)"; emit_postinstall_master "$master_payload"
+  master_iso="$BUILD_ROOT/master.iso"
+  mk_iso "master" "$master_payload" "$master_iso" "$MASTER_LAN"
+  log "[OK] master ISO: $master_iso"
+
+  # Boot master twice (install → convert → poweroff), then capture hub.env via QGA
+  pmx_deploy_uefi "$MASTER_ID" "$MASTER_NAME" "$master_iso" "$MASTER_MEM" "$MASTER_CORES" "$MASTER_DISK_GB"
+  wait_poweroff "$MASTER_ID" 2400
+  boot_from_disk_uefi "$MASTER_ID"
+  wait_poweroff "$MASTER_ID" 2400
+  pmx "qm start $MASTER_ID"
+  pmx_wait_for_state "$MASTER_ID" "running" 600
+
+  pmx_wait_qga(){ local id="$1" t="${2:-900}" s=$(date +%s); while :; do
+    pmx "qm agent $id ping >/dev/null 2>&1 || qm guest ping $id >/dev/null 2>&1" && return 0
+    (( $(date +%s)-s > t )) && return 1
+    sleep 3
+  done; }
+  pmx_wait_qga "$MASTER_ID" 900
+
+  local DEST="$BUILD_ROOT/hub/hub.env"
+  if pmx "qm guest exec $MASTER_ID --output-format json -- /bin/cat /srv/wg/hub.env" | \
+     sed -n 's/.*"out-data"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | base64 -d > "${DEST}.tmp" 2>/dev/null \
+     && [[ -s "${DEST}.tmp" ]]; then
+    mv -f "${DEST}.tmp" "${DEST}"
+    log "[OK] captured hub.env → $DEST"
+  else
+    err "Failed to retrieve hub.env via QGA"; exit 1
+  fi
+
+  # ---- minion ISOs (prom, graf, k8s, storage) ----
+  local pld iso
+  pld="$(mktemp)"; emit_minion_wrapper "$pld" "prom"    "10.77.0.10/32" "10.78.0.10/32" "10.79.0.10/32" "10.80.0.10/32"; iso="$BUILD_ROOT/prom.iso";    mk_iso "$PROM_NAME" "$pld" "$iso" "$PROM_IP"; log "[OK] prom ISO:    $iso"
+  pld="$(mktemp)"; emit_minion_wrapper "$pld" "graf"    "10.77.0.11/32" "10.78.0.11/32" "10.79.0.11/32" "10.80.0.11/32"; iso="$BUILD_ROOT/graf.iso";    mk_iso "$GRAF_NAME" "$pld" "$iso" "$GRAF_IP"; log "[OK] graf ISO:    $iso"
+  pld="$(mktemp)"; emit_minion_wrapper "$pld" "k8s"     "10.77.0.12/32" "10.78.0.12/32" "10.79.0.12/32" "10.80.0.12/32"; iso="$BUILD_ROOT/k8s.iso";     mk_iso "$K8S_NAME"  "$pld" "$iso" "$K8S_IP";  log "[OK] k8s ISO:     $iso"
+  pld="$(mktemp)"; emit_minion_wrapper "$pld" "storage" "10.77.0.13/32" "10.78.0.13/32" "10.79.0.13/32" "10.80.0.13/32"; iso="$BUILD_ROOT/storage.iso"; mk_iso "$STOR_NAME" "$pld" "$iso" "$STOR_IP";  log "[OK] storage ISO: $iso"
+}
+
+# ==============================================================================
+# PROXMOX CLUSTER DEPLOY — UEFI-ONLY path; ZFS root with BE + signed UKI
+# ==============================================================================
+proxmox_cluster(){
+  build_all_isos
+
+  pmx_deploy_uefi "$PROM_ID" "$PROM_NAME" "$BUILD_ROOT/prom.iso" "$MINION_MEM" "$MINION_CORES" "$MINION_DISK_GB"
+  wait_poweroff "$PROM_ID" 2400; boot_from_disk_uefi "$PROM_ID"; wait_poweroff "$PROM_ID" 2400; pmx "qm start $PROM_ID"; pmx_wait_for_state "$PROM_ID" "running" 600
+
+  pmx_deploy_uefi "$GRAF_ID" "$GRAF_NAME" "$BUILD_ROOT/graf.iso" "$MINION_MEM" "$MINION_CORES" "$MINION_DISK_GB"
+  wait_poweroff "$GRAF_ID" 2400; boot_from_disk_uefi "$GRAF_ID"; wait_poweroff "$GRAF_ID" 2400; pmx "qm start $GRAF_ID"; pmx_wait_for_state "$GRAF_ID" "running" 600
+
+  pmx_deploy_uefi "$K8S_ID"  "$K8S_NAME"  "$BUILD_ROOT/k8s.iso"  "$K8S_MEM"    "$MINION_CORES" "$MINION_DISK_GB"
+  wait_poweroff "$K8S_ID"  2400; boot_from_disk_uefi "$K8S_ID";  wait_poweroff "$K8S_ID"  2400; pmx "qm start $K8S_ID";  pmx_wait_for_state "$K8S_ID"  "running" 600
+
+  pmx_deploy_uefi "$STOR_ID" "$STOR_NAME" "$BUILD_ROOT/storage.iso" "$MINION_MEM" "$MINION_CORES" "$STOR_DISK_GB"
+  wait_poweroff "$STOR_ID" 2400; boot_from_disk_uefi "$STOR_ID"; wait_poweroff "$STOR_ID" 2400; pmx "qm start $STOR_ID"; pmx_wait_for_state "$STOR_ID" "running" 600
+
+  log "Done. Master + minions deployed (UEFI-only, ZFS root with BE + Sanoid + signed UKI)."
+}
+
+# ==============================================================================
+# AWS IMPORT — qcow2/raw → S3 → import-image → register UEFI+TPM
+# ==============================================================================
+aws_import_register_launch(){
+  command -v aws >/dev/null || die "aws cli required"
+  [[ -n "$AWS_S3_BUCKET" ]] || die "Set AWS_S3_BUCKET to an S3 bucket you control"
+
+  if [[ -s "$UNIVERSAL_QCOW2" ]]; then
+    log "[*] Converting qcow2 → raw"
+    qemu-img convert -p -O raw "$UNIVERSAL_QCOW2" "$UNIVERSAL_RAW"
+  fi
+  [[ -s "$UNIVERSAL_RAW" ]] || die "Provide UNIVERSAL_QCOW2 or UNIVERSAL_RAW"
+
+  log "[*] Upload RAW to s3://${AWS_S3_BUCKET}/import/${AWS_AMI_NAME}.raw"
+  aws s3 cp "$UNIVERSAL_RAW" "s3://${AWS_S3_BUCKET}/import/${AWS_AMI_NAME}.raw"
+
+  log "[*] Start import-image"
+  IID=$(aws ec2 import-image \
+          --description "$AWS_AMI_NAME import" \
+          --disk-containers "Format=raw,UserBucket={S3Bucket=${AWS_S3_BUCKET},S3Key=import/${AWS_AMI_NAME}.raw}" \
+          --query 'ImportImageTasks[0].ImportTaskId' --output text)
+
+  log "[*] Waiting for import ($IID)"
+  while :; do
+    ST=$(aws ec2 describe-import-image-tasks --import-task-ids "$IID" --query 'ImportImageTasks[0].Status' --output text)
+    [[ "$ST" == "completed" ]] && break
+    [[ "$ST" == "deleted" || "$ST" == "deleting" ]] && die "Import failed ($ST)"
+    sleep 15
+  done
+
+  SRC_AMI=$(aws ec2 describe-import-image-tasks --import-task-ids "$IID" --query 'ImportImageTasks[0].ImageId' --output text)
+  SNAP=$(aws ec2 describe-images --image-ids "$SRC_AMI" --query 'Images[0].BlockDeviceMappings[0].Ebs.SnapshotId' --output text)
+
+  log "[*] Register image with UEFI+TPM ${UEFI_BLOB:+and your UEFI var-store}"
+  AMI=$(aws ec2 register-image \
+          --name "$AWS_AMI_NAME" \
+          --architecture x86_64 \
+          --root-device-name /dev/xvda \
+          --block-device-mappings "DeviceName=/dev/xvda,Ebs={SnapshotId=${SNAP},DeleteOnTermination=true}" \
+          --virtualization-type hvm --ena-support \
+          --boot-mode uefi --tpm-support v2.0 \
+          ${UEFI_BLOB:+--uefi-data fileb://${UEFI_BLOB}} \
+          --query 'ImageId' --output text)
+
+  log "[OK] AMI: $AMI"
+
+  set +e
+  aws ec2 create-launch-template --launch-template-name "$AWS_LT_NAME" \
+      --launch-template-data "{\"ImageId\":\"$AMI\",\"InstanceType\":\"c6a.large\",\"EbsOptimized\":true}" >/dev/null 2>&1
+  set -e
+
+  aws ec2 create-launch-template-version --launch-template-name "$AWS_LT_NAME" --source-version '$Latest' \
+      --launch-template-data "{\"ImageId\":\"$AMI\"}" >/dev/null
+  aws ec2 modify-launch-template --launch-template-name "$AWS_LT_NAME" --default-version '$Latest' >/devnull 2>&1 || true
+
+  IID2=$(aws ec2 run-instances --launch-template "LaunchTemplateName=${AWS_LT_NAME},Version=\$Default" --count 1 --query 'Instances[0].InstanceId' --output text)
+  log "[OK] Instance: $IID2"
+}
+
+# ==============================================================================
+# PACKER + FIRECRACKER SCAFFOLDS (unchanged)
+# ==============================================================================
+emit_packer_scaffold(){
+  local out="${PACKER_OUT:-${BUILD_ROOT}/packer}"
+  mkdir -p "$out"
+  cat >"$out/README.txt" <<'EOF'
+Packer scaffold:
+packer {
+  required_plugins { qemu = { source = "github.com/hashicorp/qemu", version = ">=1.1.0" } }
+}
+variable "iso_path" { type=string }
+variable "vm_name" { type=string default="debian-guest" }
+source "qemu" "debian" {
+  iso_url = var.iso_path
+  output_directory = "output-${var.vm_name}"
+  headless = true
+  accelerator = "kvm"
+  cpus = 2
+  memory = 2048
+  disk_size = "20G"
+  ssh_username = "root"
+  ssh_password = "root"
+  ssh_timeout  = "30m"
+  boot_wait    = "5s"
+}
+build { name = var.vm_name sources = ["source.qemu.debian"] }
+EOF
+  log "[OK] packer scaffold at: $out"
+}
+
+emit_firecracker_scaffold(){
+  local out="${FIRECRACKER_OUT:-${BUILD_ROOT}/firecracker}"
+  install -d "$out"
+  cat >"$out/extract-kernel-initrd.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+RAW_IMG="${1:-}"; OUT_DIR="${2:-.}"
+[[ -n "$RAW_IMG" && -s "$RAW_IMG" ]] || { echo "usage: $0 <rootfs.raw> [outdir]" >&2; exit 2; }
+mkdir -p "$OUT_DIR"
+command -v guestmount >/dev/null || { echo "[X] apt install libguestfs-tools"; exit 1; }
+mnt="$(mktemp -d)"
+trap 'umount "$mnt" 2>/dev/null || true; rmdir "$mnt" 2>/dev/null || true' EXIT
+guestmount -a "$RAW_IMG" -i "$mnt"
+cp -Lf "$mnt"/boot/vmlinuz* "$OUT_DIR/kernel"
+cp -Lf "$mnt"/boot/initrd*  "$OUT_DIR/initrd"
+echo "[OK] kernel/initrd -> $OUT_DIR"
+EOF
+  chmod +x "$out/extract-kernel-initrd.sh"
+  log "[OK] Firecracker scaffold in $out"
+}
+
+# ==============================================================================
+# DISPATCHER
+# ==============================================================================
+case "$TARGET" in
+  proxmox-cluster)     proxmox_cluster ;;
+  image-only)
+    log "[*] Building role ISOs only…"
+    emit_sb_keys_if_missing
+    MASTER_PAYLOAD="$(mktemp)"; emit_postinstall_master "$MASTER_PAYLOAD"
+    MASTER_ISO="$BUILD_ROOT/master.iso"; mk_iso "master" "$MASTER_PAYLOAD" "$MASTER_ISO" "$MASTER_LAN"
+
+    mkdir -p "$BUILD_ROOT/hub"
+    # Seed placeholder hub.env (real one overwritten after master boots)
+    cat >"$BUILD_ROOT/hub/hub.env" <<EOF
+WG0_IP=${WG0_IP}
+WG1_IP=${WG1_IP}
+WG2_IP=${WG2_IP}
+WG3_IP=${WG3_IP}
+WG0_PORT=${WG0_PORT}
+WG1_PORT=${WG1_PORT}
+WG2_PORT=${WG2_PORT}
+WG3_PORT=${WG3_PORT}
+WG_ALLOWED_CIDR=${WG_ALLOWED_CIDR}
+HUB_LAN=${MASTER_LAN}
 WG0_PUB=
 WG1_PUB=
 WG2_PUB=
 WG3_PUB=
 EOF
-  chmod 0644 /srv/wg/hub.env
-fi
 
-# Ensure enrollment flag exists (open)
-: > /srv/wg/ENROLL_ENABLED
-EOS
-)"
-}
-
-# =============================================================================
-# PROXMOX CLUSTER FLOW
-# =============================================================================
-proxmox_cluster() {
-  # --- Build & deploy master ---
-  log "Emitting postinstall-master.sh"
-  MASTER_PAYLOAD="$(mktemp)"
-  emit_postinstall_master "$MASTER_PAYLOAD"
-
-  MASTER_ISO="$BUILD_ROOT/master.iso"
-  mk_iso "master" "$MASTER_PAYLOAD" "$MASTER_ISO" "$MASTER_LAN"
-  pmx_deploy "$MASTER_ID" "$MASTER_NAME" "$MASTER_ISO" "$MASTER_MEM" "$MASTER_CORES" "$MASTER_DISK_GB"
-
-  # 1) Wait installer shutdown
-  wait_poweroff "$MASTER_ID" 1800
-  # 2) Boot from disk (bootstrap runs, powers off)
-  boot_from_disk "$MASTER_ID"
-  wait_poweroff "$MASTER_ID" 2400
-  # 3) Bring it up normally
-  pmx "qm start $MASTER_ID"
-  pmx_wait_for_state "$MASTER_ID" "running" 600
-  pmx_wait_qga "$MASTER_ID" 900
-
-  # Ensure hub env + enroll flag exist (avoid race), then fetch hub.env
-  ensure_master_enrollment_seed "$MASTER_ID"
-
-  log "Fetching hub.env from master via QGA..."
-  mkdir -p "$BUILD_ROOT/hub"
-  DEST="$BUILD_ROOT/hub/hub.env"
-  if pmx_guest_cat "$MASTER_ID" "/srv/wg/hub.env" > "${DEST}.tmp" && [[ -s "${DEST}.tmp" ]]; then
-    mv -f "${DEST}.tmp" "${DEST}"
-    log "hub.env saved to ${DEST}"
-  else
-    err "QGA fetch failed; fallback to SSH probe"
-    for u in "${ADMIN_USER}" ansible root; do
-      if sssh "$u@${MASTER_LAN}" "test -r /srv/wg/hub.env" 2>/dev/null; then
-        sscp "$u@${MASTER_LAN}:/srv/wg/hub.env" "${DEST}"
-        break
-      fi
-    done
-    [[ -s "$DEST" ]] || { err "Failed to retrieve hub.env"; exit 1; }
-  fi
-
-  # Ensure enrollment flag ON
-  pmx_guest_exec "$MASTER_ID" /bin/bash -lc ": >/srv/wg/ENROLL_ENABLED" || \
-    sssh "${ADMIN_USER}@${MASTER_LAN}" 'sudo wg-enrollment on || true' || \
-    sssh root@"$MASTER_LAN" 'wg-enrollment on || true' || true
-
-  # --- Build & deploy minions ---
-  # PROM
-  PROM_PAYLOAD="$(mktemp)"; emit_minion_wrapper "$PROM_PAYLOAD" "prom" "$PROM_WG0" "$PROM_WG1" "$PROM_WG2" "$PROM_WG3"
-  PROM_ISO="$BUILD_ROOT/prom.iso"
-  mk_iso "$PROM_NAME" "$PROM_PAYLOAD" "$PROM_ISO" "$PROM_IP"
-  pmx_deploy "$PROM_ID" "$PROM_NAME" "$PROM_ISO" "$MINION_MEM" "$MINION_CORES" "$MINION_DISK_GB"
-  wait_poweroff "$PROM_ID" 2400
-  pmx "qm set $PROM_ID --delete ide2; qm set $PROM_ID --boot order=scsi0; qm start $PROM_ID"
-  pmx_wait_for_state "$PROM_ID" "running" 600
-
-  # GRAF
-  GRAF_PAYLOAD="$(mktemp)"; emit_minion_wrapper "$GRAF_PAYLOAD" "graf" "$GRAF_WG0" "$GRAF_WG1" "$GRAF_WG2" "$GRAF_WG3"
-  GRAF_ISO="$BUILD_ROOT/graf.iso"
-  mk_iso "$GRAF_NAME" "$GRAF_PAYLOAD" "$GRAF_ISO" "$GRAF_IP"
-  pmx_deploy "$GRAF_ID" "$GRAF_NAME" "$GRAF_ISO" "$MINION_MEM" "$MINION_CORES" "$MINION_DISK_GB"
-  wait_poweroff "$GRAF_ID" 2400
-  pmx "qm set $GRAF_ID --delete ide2; qm set $GRAF_ID --boot order=scsi0; qm start $GRAF_ID"
-  pmx_wait_for_state "$GRAF_ID" "running" 600
-
-  # K8S
-  K8S_PAYLOAD="$(mktemp)"; emit_minion_wrapper "$K8S_PAYLOAD" "k8s" "$K8S_WG0" "$K8S_WG1" "$K8S_WG2" "$K8S_WG3"
-  K8S_ISO="$BUILD_ROOT/k8s.iso"
-  mk_iso "$K8S_NAME" "$K8S_PAYLOAD" "$K8S_ISO" "$K8S_IP"
-  pmx_deploy "$K8S_ID" "$K8S_NAME" "$K8S_ISO" "$K8S_MEM" "$MINION_CORES" "$MINION_DISK_GB"
-  wait_poweroff "$K8S_ID" 2400
-  pmx "qm set $K8S_ID --delete ide2; qm set $K8S_ID --boot order=scsi0; qm start $K8S_ID"
-  pmx_wait_for_state "$K8S_ID" "running" 600
-
-  # STORAGE
-  STOR_PAYLOAD="$(mktemp)"; emit_minion_wrapper "$STOR_PAYLOAD" "storage" "$STOR_WG0" "$STOR_WG1" "$STOR_WG2" "$STOR_WG3"
-  STOR_ISO="$BUILD_ROOT/storage.iso"
-  mk_iso "$STOR_NAME" "$STOR_PAYLOAD" "$STOR_ISO" "$STOR_IP"
-  pmx_deploy "$STOR_ID" "$STOR_NAME" "$STOR_ISO" "$MINION_MEM" "$MINION_CORES" "$STOR_DISK_GB"
-  wait_poweroff "$STOR_ID" 2400
-  pmx "qm set $STOR_ID --delete ide2; qm set $STOR_ID --boot order=scsi0; qm start $STOR_ID"
-  pmx_wait_for_state "$STOR_ID" "running" 600
-
-  # Close enrollment
-  log "Closing WireGuard enrollment on master..."
-  pmx_guest_exec "$MASTER_ID" /bin/bash -lc "rm -f /srv/wg/ENROLL_ENABLED" || \
-    sssh "${ADMIN_USER}@${MASTER_LAN}" 'sudo wg-enrollment off || true' || \
-    sssh root@"$MASTER_LAN" 'wg-enrollment off || true' || true
-
-  log "Done. Master + minions deployed; wg0..wg3 up; SSH/Salt/Ansible(+Semaphore*) on wg0; Prom/Grafana+exporters on wg1; wg2 for k8s; wg3 for storage."
-}
-
-# =============================================================================
-# AWS / FIRECRACKER (lightly adapted from your AWS script)
-# =============================================================================
-# --- Shared darksite payload for AMI/Firecracker ---
-prepare_darksite_generic() {
-  local BUILD_DIR="${BUILD_DIR:-/root/build}"
-  local CUSTOM_DIR="$BUILD_DIR/custom"
-  local DARKSITE_DIR="$CUSTOM_DIR/darksite"
-  local INSTALL_PROFILE="${INSTALL_PROFILE:-server}"
-  local USE_CLOUD_INIT="${USE_CLOUD_INIT:-true}"
-
-  rm -rf "$BUILD_DIR" 2>/dev/null || true
-  mkdir -p "$CUSTOM_DIR" "$DARKSITE_DIR" /mnt/build || true
-
-  cat > "$DARKSITE_DIR/postinstall.sh" <<'EOS'
-#!/usr/bin/env bash
-set -euo pipefail
-LOG="/var/log/postinstall.log"
-exec > >(tee -a "$LOG") 2>&1
-trap 'echo "[X] Failed at line $LINENO" >&2' ERR
-log(){ echo "[POST] $(date '+%F %T') - $*"; }
-[ -f /etc/environment.d/99-provision.conf ] && . /etc/environment.d/99-provision.conf
-: "${DOMAIN:=localdomain}"
-: "${USE_CLOUD_INIT:=false}"
-: "${INSTALL_PROFILE:=server}"
-wait_for_network(){ for i in {1..60}; do ip route show default &>/dev/null && ping -c1 -W1 1.1.1.1 &>/dev/null && return 0; sleep 2; done; }
-update_and_upgrade(){ export DEBIAN_FRONTEND=noninteractive; apt-get update -y || true; apt-get -y upgrade || true; }
-install_base_packages(){ apt-get install -y --no-install-recommends \
-  dbus polkitd pkexec curl wget ca-certificates gnupg lsb-release unzip \
-  net-tools traceroute tcpdump sysstat strace lsof rsync rsyslog cron chrony \
-  sudo git ethtool jq qemu-guest-agent openssh-server ngrep nmap tmux htop; \
-  systemctl enable qemu-guest-agent rsyslog ssh chrony || true; }
-maybe_install_desktop(){
-  case "${INSTALL_PROFILE}" in
-    gnome-min) apt-get install -y --no-install-recommends gnome-core gdm3 gnome-terminal network-manager; systemctl enable --now NetworkManager gdm3 || true;;
-    gnome-full) apt-get install -y task-gnome-desktop;;
-    xfce-min) apt-get install -y --no-install-recommends xfce4 xfce4-terminal lightdm xorg network-manager; systemctl enable --now NetworkManager lightdm || true;;
-    kde-min) apt-get install -y --no-install-recommends plasma-desktop sddm plasma-workspace-wayland kwin-wayland konsole network-manager; systemctl enable --now NetworkManager sddm || true;;
-    *) ;;
-  esac
-}
-configure_ssh_basics(){
-  mkdir -p /etc/ssh/sshd_config.d
-  cat >/etc/ssh/sshd_config.d/99-custom.conf <<EOF
-Port 22
-Protocol 2
-PermitRootLogin prohibit-password
-PasswordAuthentication no
-X11Forwarding no
-AllowTcpForwarding no
-ClientAliveInterval 300
-ClientAliveCountMax 2
-LoginGraceTime 30
-MaxAuthTries 3
-MaxSessions 4
-PubkeyAuthentication yes
-AuthorizedKeysFile .ssh/authorized_keys
-EOF
-  chmod 600 /etc/ssh/sshd_config.d/99-custom.conf
-  systemctl restart ssh || true
-}
-configure_hostname(){
-  VM="$(hostname --short)"; FQDN="${VM}.${DOMAIN}"
-  hostnamectl set-hostname "$FQDN"
-  cat >/etc/hosts <<EOF
-127.0.0.1 localhost
-127.0.1.1 ${FQDN} ${VM}
-EOF
-}
-install_custom_scripts(){
-  if [[ -d /root/darksite/scripts ]] && compgen -G "/root/darksite/scripts/*" >/dev/null; then
-    cp -a /root/darksite/scripts/* /usr/local/bin/
-    chmod +x /usr/local/bin/* || true
-  fi
-}
-final_cleanup(){ apt-get autoremove -y || true; apt-get clean || true; find /var/log -type f -exec truncate -s 0 {} \; || true; }
-log "BEGIN postinstall"
-wait_for_network; update_and_upgrade; install_base_packages; maybe_install_desktop; configure_ssh_basics; configure_hostname; install_custom_scripts; final_cleanup
-systemctl disable bootstrap.service || true; rm -f /etc/systemd/system/bootstrap.service; systemctl daemon-reload || true
-log "Postinstall complete. Powering off..."
-/sbin/poweroff -f
-EOS
-  chmod +x "$DARKSITE_DIR/postinstall.sh"
-
-  cat > "$DARKSITE_DIR/bootstrap.service" <<'EOF'
-[Unit]
-Description=Initial Bootstrap Script (One-time)
-After=network.target
-Wants=network.target
-ConditionPathExists=/root/darksite/postinstall.sh
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -lc '/root/darksite/postinstall.sh'
-TimeoutStartSec=0
-StandardOutput=journal+console
-StandardError=journal+console
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  mkdir -p "$DARKSITE_DIR"
-  mkdir -p /etc/environment.d || true
-  cat > "$DARKSITE_DIR/99-provision.conf" <<EOF
-DOMAIN=$DOMAIN
-USE_CLOUD_INIT=${USE_CLOUD_INIT:-true}
-INSTALL_PROFILE=${INSTALL_PROFILE:-server}
-EOF
-}
-
-# -------- AWS knobs & helpers --------
-AWS_REGION="${AWS_REGION:-ca-central-1}"
-AWS_PROFILE="${AWS_PROFILE:-}"
-AWS_INSTANCE_NAME="${AWS_INSTANCE_NAME:-k8s-node}"
-AWS_INSTANCE_TYPE="${AWS_INSTANCE_TYPE:-t2.micro}"
-AWS_SUBNET_ID="${AWS_SUBNET_ID:-}"
-AWS_ASSOC_PUBLIC_IP="${AWS_ASSOC_PUBLIC_IP:-auto}" # auto|true|false
-AWS_SG_NAME="${AWS_SG_NAME:-${AWS_INSTANCE_NAME}-sg}"
-AWS_ENABLE_SSH="${AWS_ENABLE_SSH:-true}"
-AWS_SSH_CIDR="${AWS_SSH_CIDR:-}"
-AWS_KEY_NAME="${AWS_KEY_NAME:-${AWS_INSTANCE_NAME}-key}"
-AWS_PUBLIC_KEY_PATH="${AWS_PUBLIC_KEY_PATH:-}"
-AWS_SAVE_PEM="${AWS_SAVE_PEM:-${AWS_KEY_NAME}.pem}"
-AWS_SSH_USER="${AWS_SSH_USER:-admin}"
-AWS_EXTRA_TAGS="${AWS_EXTRA_TAGS:-Owner=ops,Env=dev}"
-AWS_BASE_AMI="${AWS_BASE_AMI:-}"
-AWS_AMI_ID="${AWS_AMI_ID:-}"
-AWS_ARCH="${AWS_ARCH:-x86_64}"
-
-aws_cli(){ if [[ -n "${AWS_PROFILE:-}" ]]; then aws --profile "$AWS_PROFILE" --region "$AWS_REGION" "$@"; else aws --region "$AWS_REGION" "$@"; fi }
-resolve_debian13_ami(){
-  local arch="${1:-x86_64}"
-  local name_filter; if [[ "$arch" == "arm64" ]]; then name_filter="debian-13-arm64-*"; else name_filter="debian-13-amd64-*"; fi
-  aws_cli ec2 describe-images \
-    --owners 136693071363 \
-    --filters "Name=name,Values=${name_filter}" "Name=architecture,Values=${arch}" \
-              "Name=virtualization-type,Values=hvm" "Name=root-device-type,Values=ebs" \
-    --query 'reverse(sort_by(Images,&CreationDate))[0].ImageId' --output text
-}
-wait_for_ssh(){ local host="$1" user="$2" key="${3:-}" timeout="${4:-600}" start; start=$(date +%s)
-  while :; do
-    if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new ${key:+-i "$key"} "$user@$host" "true" 2>/dev/null; then return 0; fi
-    (( $(date +%s)-start > timeout )) && return 1
-    sleep 5
-  done
-}
-
-aws_bake_ami(){
-  local BUILD_DIR="${BUILD_DIR:-/root/build}"
-  local DARKSITE_DIR="$BUILD_DIR/custom/darksite"
-  prepare_darksite_generic
-  [[ -z "$AWS_BASE_AMI" || "$AWS_BASE_AMI" == "auto" ]] && AWS_BASE_AMI="$(resolve_debian13_ami "$AWS_ARCH")"
-  [[ -n "$AWS_BASE_AMI" && "$AWS_BASE_AMI" != "None" ]] || die "Could not resolve Debian 13 AMI."
-
-  aws_cli sts get-caller-identity >/dev/null || die "AWS auth failed."
-  vpc_id="$(aws_cli ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)"
-  [[ -n "$AWS_SUBNET_ID" ]] || AWS_SUBNET_ID="$(aws_cli ec2 describe-subnets --filters Name=vpc-id,Values="$vpc_id" --query 'Subnets[0].SubnetId' --output text)"
-
-  sg_id="$(aws_cli ec2 describe-security-groups --filters Name=group-name,Values="$AWS_SG_NAME" Name=vpc-id,Values="$vpc_id" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
-  if [[ -z "$sg_id" || "$sg_id" == "None" ]]; then
-    sg_id="$(aws_cli ec2 create-security-group --vpc-id "$vpc_id" --group-name "$AWS_SG_NAME" --description "SG for $AWS_INSTANCE_NAME" --query 'GroupId' --output text)"
-  fi
-  myip="$(curl -fsSL https://checkip.amazonaws.com || true)"; myip="${myip//$'\n'/}"
-  if [[ "$AWS_ENABLE_SSH" == "true" ]]; then
-    cidr="${AWS_SSH_CIDR:-${myip:+${myip}/32}}"
-    [[ -n "$cidr" ]] && aws_cli ec2 authorize-security-group-ingress --group-id "$sg_id" \
-      --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=\"${cidr}\"}]" >/dev/null 2>&1 || true
-  fi
-
-  if [[ -n "$AWS_PUBLIC_KEY_PATH" && -r "$AWS_PUBLIC_KEY_PATH" ]]; then
-    exists="$(aws_cli ec2 describe-key-pairs --key-names "$AWS_KEY_NAME" --query 'KeyPairs[0].KeyName' --output text 2>/dev/null || true)"
-    [[ "$exists" == "$AWS_KEY_NAME" ]] || aws_cli ec2 import-key-pair --key-name "$AWS_KEY_NAME" --public-key-material "fileb://$AWS_PUBLIC_KEY_PATH" >/dev/null
-    PEM_PATH=""
-  else
-    exists="$(aws_cli ec2 describe-key-pairs --key-names "$AWS_KEY_NAME" --query 'KeyPairs[0].KeyName' --output text 2>/dev/null || true)"
-    if [[ "$exists" != "$AWS_KEY_NAME" ]]; then
-      aws_cli ec2 create-key-pair --key-name "$AWS_KEY_NAME" --key-type rsa --key-format pem --query 'KeyMaterial' --output text > "$AWS_SAVE_PEM"
-      chmod 600 "$AWS_SAVE_PEM"; PEM_PATH="$AWS_SAVE_PEM"
-    else PEM_PATH=""; fi
-  fi
-
-  if [[ "$AWS_ASSOC_PUBLIC_IP" == "true" ]]; then
-    ni="[{\"DeviceIndex\":0,\"SubnetId\":\"${AWS_SUBNET_ID}\",\"Groups\":[\"${sg_id}\"],\"AssociatePublicIpAddress\":true}]"
-  elif [[ "$AWS_ASSOC_PUBLIC_IP" == "false" ]]; then
-    ni="[{\"DeviceIndex\":0,\"SubnetId\":\"${AWS_SUBNET_ID}\",\"Groups\":[\"${sg_id}\"],\"AssociatePublicIpAddress\":false}]"
-  else
-    ni="[{\"DeviceIndex\":0,\"SubnetId\":\"${AWS_SUBNET_ID}\",\"Groups\":[\"${sg_id}\"]}]"
-  fi
-
-  log "Launching builder from $AWS_BASE_AMI..."
-  tags="ResourceType=instance,Tags=[{Key=Name,Value=${AWS_INSTANCE_NAME}-builder},{Key=Owner,Value=ops},{Key=Env,Value=dev}]"
-  iid="$(aws_cli ec2 run-instances --image-id "$AWS_BASE_AMI" --instance-type "$AWS_INSTANCE_TYPE" --key-name "$AWS_KEY_NAME" --network-interfaces "$ni" --tag-specifications "$tags" --query 'Instances[0].InstanceId' --output text)"
-  [[ -n "$iid" && "$iid" != "None" ]] || die "run-instances failed."
-  aws_cli ec2 wait instance-running --instance-ids "$iid"
-  pub_ip="$(aws_cli ec2 describe-instances --instance-ids "$iid" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)"
-  log "Builder instance: $iid  PublicIP=$pub_ip"
-
-  log "Waiting for SSH..."
-  wait_for_ssh "$pub_ip" "$AWS_SSH_USER" "${PEM_PATH:-}" 900 || die "SSH not reachable."
-
-  log "Copying darksite..."
-  scp -r -o StrictHostKeyChecking=accept-new ${PEM_PATH:+-i "$PEM_PATH"} "$DARKSITE_DIR" "$AWS_SSH_USER@$pub_ip:/home/$AWS_SSH_USER/"
-  ssh ${PEM_PATH:+-i "$PEM_PATH"} "$AWS_SSH_USER@$pub_ip" "sudo mkdir -p /root/darksite && sudo cp -a /home/$AWS_SSH_USER/darksite/* /root/darksite/ && sudo mkdir -p /etc/environment.d && echo 'DOMAIN=$DOMAIN' | sudo tee /etc/environment.d/99-provision.conf >/dev/null && echo 'USE_CLOUD_INIT=true' | sudo tee -a /etc/environment.d/99-provision.conf >/dev/null && echo 'INSTALL_PROFILE=${INSTALL_PROFILE:-server}' | sudo tee -a /etc/environment.d/99-provision.conf >/dev/null && echo OK"
-
-  log "Activate bootstrap (will power off)..."
-  ssh ${PEM_PATH:+-i "$PEM_PATH"} "$AWS_SSH_USER@$pub_ip" "sudo cp /root/darksite/bootstrap.service /etc/systemd/system/bootstrap.service && sudo systemctl daemon-reload && sudo systemctl enable --now bootstrap.service || true"
-
-  log "Waiting for builder to stop..."
-  aws_cli ec2 wait instance-stopped --instance-ids "$iid"
-
-  ami_name="${AWS_INSTANCE_NAME}-$(date +%Y%m%d-%H%M%S)"
-  log "Creating AMI: $ami_name"
-  new_ami="$(aws_cli ec2 create-image --instance-id "$iid" --name "$ami_name" --description "Baked by unified deployer" --no-reboot --query 'ImageId' --output text)"
-  aws_cli ec2 create-tags --resources "$new_ami" --tags Key=Name,Value="$ami_name" >/dev/null
-  log "AMI_ID=$new_ami"
-
-  log "Terminating builder..."
-  aws_cli ec2 terminate-instances --instance-ids "$iid" >/dev/null || true
-
-  echo; echo "=== AMI CREATED ==="; echo "AMI_ID: $new_ami"; echo "Name  : $ami_name"
-}
-
-aws_run_from_ami(){
-  [[ -n "$AWS_AMI_ID" ]] || die "Set AWS_AMI_ID to the AMI you want to launch."
-  aws_cli sts get-caller-identity >/dev/null || die "AWS auth failed."
-
-  vpc_id="$(aws_cli ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)"
-  [[ -n "$AWS_SUBNET_ID" ]] || AWS_SUBNET_ID="$(aws_cli ec2 describe-subnets --filters Name=vpc-id,Values="$vpc_id" --query 'Subnets[0].SubnetId' --output text)"
-
-  sg_id="$(aws_cli ec2 describe-security-groups --filters Name=group-name,Values="$AWS_SG_NAME" Name=vpc-id,Values="$vpc_id" --query 'SecurityGroups[0].GroupId' --output text 2>/dev/null || true)"
-  if [[ -z "$sg_id" || "$sg_id" == "None" ]]; then
-    sg_id="$(aws_cli ec2 create-security-group --vpc-id "$vpc_id" --group-name "$AWS_SG_NAME" --description "SG for $AWS_INSTANCE_NAME" --query 'GroupId' --output text)"
-  fi
-  myip="$(curl -fsSL https://checkip.amazonaws.com || true)"; myip="${myip//$'\n'/}"
-  if [[ "$AWS_ENABLE_SSH" == "true" ]]; then
-    cidr="${AWS_SSH_CIDR:-${myip:+${myip}/32}}"
-    [[ -n "$cidr" ]] && aws_cli ec2 authorize-security-group-ingress --group-id "$sg_id" \
-      --ip-permissions "IpProtocol=tcp,FromPort=22,ToPort=22,IpRanges=[{CidrIp=\"${cidr}\"}]" >/dev/null 2>&1 || true
-  fi
-
-  if [[ -n "$AWS_PUBLIC_KEY_PATH" && -r "$AWS_PUBLIC_KEY_PATH" ]]; then
-    exists="$(aws_cli ec2 describe-key-pairs --key-names "$AWS_KEY_NAME" --query 'KeyPairs[0].KeyName' --output text 2>/dev/null || true)"
-    [[ "$exists" == "$AWS_KEY_NAME" ]] || aws_cli ec2 import-key-pair --key-name "$AWS_KEY_NAME" --public-key-material "fileb://$AWS_PUBLIC_KEY_PATH" >/dev/null
-  fi
-
-  if [[ "$AWS_ASSOC_PUBLIC_IP" == "true" ]]; then
-    ni="[{\"DeviceIndex\":0,\"SubnetId\":\"${AWS_SUBNET_ID}\",\"Groups\":[\"${sg_id}\"],\"AssociatePublicIpAddress\":true}]"
-  elif [[ "$AWS_ASSOC_PUBLIC_IP" == "false" ]]; then
-    ni="[{\"DeviceIndex\":0,\"SubnetId\":\"${AWS_SUBNET_ID}\",\"Groups\":[\"${sg_id}\"],\"AssociatePublicIpAddress\":false}]"
-  else
-    ni="[{\"DeviceIndex\":0,\"SubnetId\":\"${AWS_SUBNET_ID}\",\"Groups\":[\"${sg_id}\"]}]"
-  fi
-
-  tags="ResourceType=instance,Tags=[{Key=Name,Value=${AWS_INSTANCE_NAME}},{Key=Owner,Value=ops},{Key=Env,Value=dev}]"
-  iid="$(aws_cli ec2 run-instances --image-id "$AWS_AMI_ID" --instance-type "$AWS_INSTANCE_TYPE" --key-name "$AWS_KEY_NAME" --network-interfaces "$ni" --tag-specifications "$tags" --query 'Instances[0].InstanceId' --output text)"
-  [[ -n "$iid" && "$iid" != "None" ]] || die "run-instances failed."
-  aws_cli ec2 wait instance-running --instance-ids "$iid"
-  pub_ip="$(aws_cli ec2 describe-instances --instance-ids "$iid" --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)"
-  log "Launched: $iid  PublicIP=$pub_ip"
-}
-
-# -------- Firecracker flow (same as before) --------
-firecracker_flow(){
-  local BUILD_DIR="${BUILD_DIR:-/root/build}"
-  local FC_ROOTFS_DIR="${FC_ROOTFS_DIR:-$BUILD_DIR/fcroot}"
-  local FC_IMG="${FC_IMG:-$BUILD_DIR/rootfs.ext4}"
-  local FC_IMG_SIZE_MB="${FC_IMG_SIZE_MB:-2048}"
-  local FC_VMLINUX_PATH="${FC_VMLINUX_PATH:-/boot/vmlinux-$(uname -r)}"
-  local FC_OUTPUT_VMLINUX="${FC_OUTPUT_VMLINUX:-$BUILD_DIR/vmlinux}"
-  local FC_RUN_SCRIPT="${FC_RUN_SCRIPT:-$BUILD_DIR/run-fc.sh}"
-  local FC_CONFIG_JSON="${FC_CONFIG_JSON:-$BUILD_DIR/fc.json}"
-  local FC_TAP_IF="${FC_TAP_IF:-fc-tap0}"
-  local FC_GUEST_IP="${FC_GUEST_IP:-172.20.0.2/24}"
-  local FC_GW_IP="${FC_GW_IP:-172.20.0.1}"
-  local FC_VCPUS="${FC_VCPUS:-2}"
-  local FC_MEM_MB="${FC_MEM_MB:-2048}"
-
-  prepare_darksite_generic
-
-  log "Building Firecracker rootfs (Debian minimal)..."
-  rm -rf "$FC_ROOTFS_DIR"; mkdir -p "$FC_ROOTFS_DIR"
-  debootstrap --variant=minbase trixie "$FC_ROOTFS_DIR" http://deb.debian.org/debian
-  cp -a "$BUILD_DIR/custom/darksite" "$FC_ROOTFS_DIR/root/darksite"
-  mkdir -p "$FC_ROOTFS_DIR/etc/environment.d"
-  cp -a "$BUILD_DIR/custom/darksite/99-provision.conf" "$FC_ROOTFS_DIR/etc/environment.d/99-provision.conf"
-
-  chroot "$FC_ROOTFS_DIR" bash -c '
-    set -euo pipefail
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y --no-install-recommends systemd-sysv ca-certificates curl wget iproute2 iputils-ping openssh-server net-tools rsyslog
-    systemctl enable ssh rsyslog
-    cat >/etc/systemd/system/fc-firstboot.service <<EOF
-[Unit]
-Description=Firecracker first boot bootstrap
-After=network-online.target
-Wants=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/bin/bash -lc "/root/darksite/postinstall.sh || true"
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl enable fc-firstboot.service
-    apt-get install -y --no-install-recommends systemd-networkd
-    systemctl enable systemd-networkd
-  '
-
-  mkdir -p "$FC_ROOTFS_DIR/etc/systemd/network"
-  cat > "$FC_ROOTFS_DIR/etc/systemd/network/10-eth0.network" <<EOF
-[Match]
-Name=eth0
-[Network]
-Address=${FC_GUEST_IP}
-Gateway=${FC_GW_IP}
-DNS=1.1.1.1
-EOF
-
-  log "Assembling ext4 image..."
-  mkdir -p "$BUILD_DIR/mntimg"
-  fallocate -l "${FC_IMG_SIZE_MB}M" "$FC_IMG"
-  mkfs.ext4 -F "$FC_IMG"
-  mount -o loop "$FC_IMG" "$BUILD_DIR/mntimg"
-  rsync -aHAX --exclude=/proc --exclude=/sys --exclude=/dev --exclude=/tmp --exclude=/run "$FC_ROOTFS_DIR"/ "$BUILD_DIR/mntimg"/
-  mkdir -p "$BUILD_DIR/mntimg"/{proc,sys,dev,run,tmp}; chmod 1777 "$BUILD_DIR/mntimg/tmp"
-  umount "$BUILD_DIR/mntimg"
-
-  if [[ -f "$FC_VMLINUX_PATH" ]]; then cp -f "$FC_VMLINUX_PATH" "$FC_OUTPUT_VMLINUX"
-  else vmlin="$(find /boot -maxdepth 1 -type f -name "vmlinux-*" | head -n1 || true)"; [[ -n "$vmlin" ]] && cp -f "$vmlin" "$FC_OUTPUT_VMLINUX" || die "No vmlinux found"; fi
-
-  cat > "$FC_CONFIG_JSON" <<EOF
-{
-  "boot-source": { "kernel_image_path": "$(realpath "$FC_OUTPUT_VMLINUX")", "boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodules random.trust_cpu=on" },
-  "drives": [ { "drive_id": "rootfs", "path_on_host": "$(realpath "$FC_IMG")", "is_root_device": true, "is_read_only": false } ],
-  "network-interfaces": [ { "iface_id": "eth0", "guest_mac": "02:FC:00:00:00:01", "host_dev_name": "${FC_TAP_IF}" } ],
-  "machine-config": { "vcpu_count": ${FC_VCPUS}, "mem_size_mib": ${FC_MEM_MB}, "smt": false }
-}
-EOF
-
-  cat > "$FC_RUN_SCRIPT" <<'EOS'
-#!/usr/bin/env bash
-set -euo pipefail
-FC_BIN="${FC_BIN:-/usr/local/bin/firecracker}"
-CFG="${CFG:-__CFG__}"
-TAP="__TAP__"
-GW="__GW__"
-if ! command -v "$FC_BIN" >/dev/null 2>&1; then echo "firecracker binary not found at $FC_BIN" >&2; exit 1; fi
-if ! ip link show "$TAP" >/dev/null 2>&1; then
-  sudo ip tuntap add dev "$TAP" mode tap
-  sudo ip addr add "$GW" dev "$TAP"
-  sudo ip link set "$TAP" up
-  if command -v nft >/dev/null 2>&1; then
-    sudo nft add table inet fc 2>/dev/null || true
-    sudo nft add chain inet fc post { type nat hook postrouting priority 100 \; } 2>/dev/null || true
-    sudo nft add rule inet fc post oifname != "$TAP" masquerade 2>/dev/null || true
-  fi
-fi
-exec "$FC_BIN" --no-api --config-file "$CFG" --seccomp-level=0
-EOS
-  sed -i "s|__CFG__|$(realpath "$FC_CONFIG_JSON")|g" "$FC_RUN_SCRIPT"
-  sed -i "s|__TAP__|$FC_TAP_IF|g" "$FC_RUN_SCRIPT"
-  sed -i "s|__GW__|$FC_GW_IP|g" "$FC_RUN_SCRIPT"
-  chmod +x "$FC_RUN_SCRIPT"
-
-  log "Firecracker outputs:"
-  log " - Kernel : $FC_OUTPUT_VMLINUX"
-  log " - Rootfs : $FC_IMG"
-  log " - Config : $FC_CONFIG_JSON"
-  log " - Runner : $FC_RUN_SCRIPT"
-}
-
-# =============================================================================
-# MAIN
-# =============================================================================
-case "$TARGET" in
-  proxmox-cluster) proxmox_cluster ;;
-  aws-ami)         aws_bake_ami ;;
-  aws-run)         aws_run_from_ami ;;
-  firecracker)     firecracker_flow ;;
-  *)               die "Unknown TARGET '$TARGET' (use proxmox-cluster | aws-ami | aws-run | firecracker)" ;;
+    P="$(mktemp)"; emit_minion_wrapper "$P" "prom"    "10.77.0.10/32" "10.78.0.10/32" "10.79.0.10/32" "10.80.0.10/32"; mk_iso "$PROM_NAME" "$P" "$BUILD_ROOT/prom.iso"    "$PROM_IP"
+    P="$(mktemp)"; emit_minion_wrapper "$P" "graf"    "10.77.0.11/32" "10.78.0.11/32" "10.79.0.11/32" "10.80.0.11/32"; mk_iso "$GRAF_NAME" "$P" "$BUILD_ROOT/graf.iso"    "$GRAF_IP"
+    P="$(mktemp)"; emit_minion_wrapper "$P" "k8s"     "10.77.0.12/32" "10.78.0.12/32" "10.79.0.12/32" "10.80.0.12/32"; mk_iso "$K8S_NAME"  "$P" "$BUILD_ROOT/k8s.iso"     "$K8S_IP"
+    P="$(mktemp)"; emit_minion_wrapper "$P" "storage" "10.77.0.13/32" "10.78.0.13/32" "10.79.0.13/32" "10.80.0.13/32"; mk_iso "$STOR_NAME" "$P" "$BUILD_ROOT/storage.iso" "$STOR_IP"
+    log "[DONE] ISOs in $BUILD_ROOT"
+    ;;
+  aws)                 emit_sb_keys_if_missing; aws_import_register_launch ;;
+  packer-scaffold)     emit_packer_scaffold ;;
+  firecracker-bundle)  emit_firecracker_scaffold ;;
+  *)                   die "Unknown TARGET=$TARGET" ;;
 esac
