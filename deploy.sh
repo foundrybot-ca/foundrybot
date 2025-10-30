@@ -10,7 +10,7 @@ TARGET="${TARGET:-proxmox-cluster}"   # proxmox-cluster | aws-ami | aws-run | fi
 
 # ============================ GLOBAL CONFIG =============================
 INPUT="${INPUT:-1}"   # 1|fiend, 2|dragon, 3|lion
-DOMAIN="${DOMAIN:-unixbox.net}"
+DOMAIN="${DOMAIN:-foundryBot.ca}"
 
 case "$INPUT" in
   1|fiend)  PROXMOX_HOST="${PROXMOX_HOST:-10.100.10.225}" ;;
@@ -56,11 +56,11 @@ K8S_MEM="${K8S_MEM:-8192}"
 STOR_DISK_GB="${STOR_DISK_GB:-64}"
 
 # ===== Admin =====
-ADMIN_USER="${ADMIN_USER:-todd}"
+ADMIN_USER="${ADMIN_USER:-user}"
 ADMIN_PUBKEY_FILE="${ADMIN_PUBKEY_FILE:-}"
 SSH_PUBKEY="${SSH_PUBKEY:-}"
 ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-${ALLOW_TODD_PASSWORD:-no}}"
-GUI_PROFILE="${GUI_PROFILE:-rdp-minimal}"
+GUI_PROFILE="${GUI_PROFILE:-server}"  # rdp-minimal
 
 # Optional
 INSTALL_ANSIBLE="${INSTALL_ANSIBLE:-yes}"
