@@ -14,7 +14,7 @@ TARGET="${TARGET:-proxmox-cluster}"
 
 # ============================ GLOBAL CONFIG =============================
 INPUT="${INPUT:-1}"   # 1|fiend, 2|dragon, 3|lion
-DOMAIN="${DOMAIN:-unixbox.net}"
+DOMAIN="${DOMAIN:-foundryBot.ca}"
 case "$INPUT" in
   1|fiend)  PROXMOX_HOST="${PROXMOX_HOST:-10.100.10.225}" ;;
   2|dragon) PROXMOX_HOST="${PROXMOX_HOST:-10.100.10.226}" ;;
@@ -101,7 +101,7 @@ ADMIN_USER="${ADMIN_USER:-todd}"
 ADMIN_PUBKEY_FILE="${ADMIN_PUBKEY_FILE:-/home/todd/.ssh/id_ed25519.pub}"
 SSH_PUBKEY="${SSH_PUBKEY:-}"
 ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-no}"
-GUI_PROFILE="${GUI_PROFILE:-rdp-minimal}"
+GUI_PROFILE="${GUI_PROFILE:-server}"  # rdp-minimal
 
 # Ops extras
 INSTALL_ANSIBLE="${INSTALL_ANSIBLE:-yes}"
