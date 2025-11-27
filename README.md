@@ -15,8 +15,8 @@ sudo apt-get update && sudo apt-get install -y \
   awscli curl jq rsync
 ```
 
-_**2. A target HW Hypervisor/Server** that will run the instances**_
-Proxmox node (this example), or
+_**2. A target HW Hypervisor/Server that will run the instances
+Proxmox node (for this example)**_, or
 Cloud account (AWS / other KVM-based clouds), or
 Bare-metal box that can boot UEFI images.
 
