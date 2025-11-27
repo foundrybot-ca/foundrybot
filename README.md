@@ -1,15 +1,13 @@
-<https://foundrybot.ca>
-## foundryBot is a one-touch deployment kit.
+## How To:
 
-It’s a single Bash script that takes a stock Debian ISO, builds a small set of secure hardware/VM images, and boots them into a ready-to-manage cluster with a private WireGuard network already online.
-
-## Think of it in two steps:
-
-# Step 1 — Install the cluster: from your build machine, run the script once. It repacks the ISO, deploys the VMs/nodes, and wires up a native encrypted backplane.
-# Step 2 — Manage the cluster: once it’s up, manage it with whatever you like: Salt, Ansible, kubectl, or your own tooling. Example Salt states are included but totally optional.
+Step 1: Install proxmox using local-zfs
+Step 2: from your "build" machine as root ssh-copy-id <proxmox> select yes to accept, ensure you cah ssh to proxmox
+Step 3: https://github.com/foundrybot-ca/foundryBot.git
 
 What you need (2 machines, that’s it)
 
+
+# Notes:
 ## 1. A build machine
 Any modern Linux box (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
