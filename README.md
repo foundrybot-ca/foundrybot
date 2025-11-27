@@ -47,3 +47,23 @@ Your SSH key (id_ed25519.pub) for the admin user.
 Proxmox node (this example), or
 Cloud account (AWS / other KVM-based clouds), or
 Bare-metal box that can boot UEFI images.
+
+# Optional,
+The script can also be deployed via EXPORTS
+
+Examples:
+```bash - deploy to proxmox using the script defaults
+ISO_ORIG=/root/debian-13.1.0-amd64-netinst.iso \
+TARGET=proxmox-all \
+./deploy.sh
+```
+
+```bash - Proxmox cluster on dragon with custom admin + GNOME
+ISO_ORIG=/root/debian-13.1.0-amd64-netinst.iso \
+INPUT=2 \                             # 2|dragon -> 10.100.10.226
+TARGET=proxmox-cluster \
+ADMIN_USER=admin \
+GUI_PROFILE=gnome \
+./deploy.sh
+```
+
