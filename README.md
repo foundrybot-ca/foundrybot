@@ -1,4 +1,4 @@
-**# Requirements:**
+# ** Requirements:**
 
 1. **A build machind**
 Any modern Linux box (laptop, workstation, or another VM).
