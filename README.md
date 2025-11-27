@@ -36,8 +36,6 @@ Proxmox is the default “easy path” to show the idea.
   - config as needed
   - chmod +x deploy.sh
   - sudo su -
-  - vim deploy.sh adjust to taste (the default usees vmid 2000-2010 10.100.10.0/24 and multiple wireguard networks for examples
-**STEP 3:** _deploy the cluster, obtain coffee_
   - ./deploy.sh
 
 # **VMS CREATED:**
