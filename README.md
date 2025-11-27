@@ -1,5 +1,6 @@
-**Requirements:**
-**1. A build machine**
+**# Requirements:**
+
+1. **A build machind**
 Any modern Linux box (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
