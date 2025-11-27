@@ -2,7 +2,7 @@
 
 # STEP 1: Install
   - Install proxmox using local-zfs
-  - from your "build" machine as root ssh-copy-id <proxmox> select yes to accept, ensure you cah ssh to proxmox
+  - from your "build" machine as root ssh-copy-id <proxmox> select yes to accept, ensure you can ssh to proxmox
   - https://github.com/foundrybot-ca/foundryBot.git
   - chmod +x deploy.sh
   - sudo su -
