@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# WIP post install kubernetes setup
 import subprocess
 import json
 import shutil
