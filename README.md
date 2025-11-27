@@ -1,6 +1,6 @@
 # ** Requirements:**
 
-1. **A build machind** Where the ./deploy.sh will be executed **FROM**
+1. **A build machind** AKA where the **./deploy.sh** will be executed **FROM**
 Any modern Linux box will do (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
@@ -39,7 +39,7 @@ sudo apt-get update && sudo apt-get install -y \
   packer
 ```
 
-**2. A target HW Hypervisor/Server**
+**2. A target HW Hypervisor/Server** that will run the instances
 Proxmox node (this example), or
 Cloud account (AWS / other KVM-based clouds), or
 Bare-metal box that can boot UEFI images.
