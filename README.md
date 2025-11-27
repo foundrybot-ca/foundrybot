@@ -1,14 +1,29 @@
+# Requirements:
+1. A build machine
+Any modern Linux box (laptop, workstation, or another VM).
+Bash + standard tools (curl, xorriso, qemu-img, etc.).
+A Debian ISO (Trixie / 13.x works out of the box).
+Your SSH key (id_ed25519.pub) for the admin user.
+
+2. A target
+Proxmox node (this example), or
+Cloud account (AWS / other KVM-based clouds), or
+Bare-metal box that can boot UEFI images.
+The script itself is agnostic: it just builds signed images and talks to whatever can load them. Proxmox is the default “easy path” to show the idea.
+
 ## How To:
 
-# STEP 1: Install
+#STEP 1: Install the Target Hypervisor/HW
   - Install proxmox using local-zfs
-  - from your "build" machine as root ssh-copy-id <proxmox> select yes to accept, ensure you can ssh to proxmox
+#STEP 2: build/use a "build" machine &&
+  - as root ssh-copy-id <proxmox-ip> && ensure you can ssh to proxmox
+#STEP 3: clone and modify deploy.sh     
   - git clone https://github.com/foundrybot-ca/foundryBot.git && cd foundryBot
   - chmod +x deploy.sh
   - sudo su -
   - vim deploy.sh adjust to taste (the default usees vmid 2000-2010 10.100.10.0/24 and multiple wireguard networks for examples
+#STEP 4: deploy the cluster, obtain coffee
   - ./deploy.sh
-
 
 # VMS CREATED:
   -  master - preconfigured with Salt/Ansible and optional Semaphore, keys are magically copied to minions (included)
