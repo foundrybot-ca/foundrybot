@@ -32,8 +32,8 @@ Proxmox is the default “easy path” to show the idea.
 **STEP 1:** _Install the Target Hypervisor/HW_
   - Install proxmox
   - as root ssh-copy-id to <proxmox-ip> && ensure your build machine can ssh to proxmox
-**STEP 2:** _clone and modify deploy.sh_
   - git clone https://github.com/foundrybot-ca/foundryBot.git && cd foundryBot
+  - config as needed
   - chmod +x deploy.sh
   - sudo su -
   - vim deploy.sh adjust to taste (the default usees vmid 2000-2010 10.100.10.0/24 and multiple wireguard networks for examples
