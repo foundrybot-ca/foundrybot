@@ -16,6 +16,7 @@ sudo apt-get update && sudo apt-get install -y \
 ```
 recomended
 ```
+sudo apt-get update && sudo apt-get install -y \
   # --- filesystem / disk image plumbing ---
   debootstrap \
   parted gdisk e2fsprogs \
@@ -23,10 +24,11 @@ recomended
   # --- network / fetch / scripting ---
   curl wget ca-certificates \
   jq \
-  rsync pv \
+  rsync pv
 ```
 optional
 ```
+sudo apt-get update && sudo apt-get install -y \
 # --- dev / glue ---
   git \
   python3 python3-venv python3-pip \
