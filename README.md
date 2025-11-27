@@ -1,6 +1,6 @@
 # ** Requirements:**
 
-1. **A build machine** where the **./deploy.sh** will be executed **FROM**
+_**1. A build machine where the ./deploy.sh will be executed FROM**_
 Any modern Linux box will do (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
@@ -15,7 +15,7 @@ sudo apt-get update && sudo apt-get install -y \
   awscli curl jq rsync
 ```
 
-**2. A target HW Hypervisor/Server** that will run the instances
+_**2. A target HW Hypervisor/Server** that will run the instances**_
 Proxmox node (this example), or
 Cloud account (AWS / other KVM-based clouds), or
 Bare-metal box that can boot UEFI images.
