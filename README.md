@@ -1,42 +1,18 @@
 # ** Requirements:**
 
-1. **A build machind** AKA where the **./deploy.sh** will be executed **FROM**
+1. **A build machine** AKA where the **./deploy.sh** will be executed **FROM**
 Any modern Linux box will do (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
 Your SSH key (id_ed25519.pub) for the admin user.
 
+install:
 ```bash
 sudo apt-get update && sudo apt-get install -y \
-  # --- ISO / boot tooling ---
-  xorriso \
-  syslinux-common isolinux \
-  grub-pc-bin grub-efi-amd64-bin \
-  squashfs-tools genisoimage \
-  mtools dosfstools
-```
-**Recomended**
-```
-sudo apt-get update && sudo apt-get install -y \
-  # --- filesystem / disk image plumbing ---
-  debootstrap \
-  parted gdisk e2fsprogs \
-  qemu-utils qemu-system-x86 ovmf \
-  # --- network / fetch / scripting ---
-  curl wget ca-certificates \
-  jq \
-  rsync pv
-```
-**Optional**
-```
-sudo apt-get update && sudo apt-get install -y \
-# --- dev / glue ---
-  git \
-  python3 python3-venv python3-pip \
-  unzip zip p7zip-full \
-  # --- cloud / automation helpers ---
-  awscli \
-  packer
+  xorriso syslinux-common isolinux grub-pc-bin grub-efi-amd64-bin \
+  debootstrap squashfs-tools genisoimage \
+  qemu-utils parted e2fsprogs \
+  awscli curl jq rsync
 ```
 
 **2. A target HW Hypervisor/Server** that will run the instances
