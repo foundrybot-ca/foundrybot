@@ -26,16 +26,15 @@ Proxmox is the default “easy path” to show the idea.
 
 # **How To:**
 
-**STEP 1:** Install the Target Hypervisor/HW
-  - Install proxmox using local-zfs
-**STEP 2:** build/use a "build" machine &&
-  - as root ssh-copy-id <proxmox-ip> && ensure you can ssh to proxmox
-**STEP 3:** clone and modify deploy.sh     
+**STEP 1:** _Install the Target Hypervisor/HW_
+  - Install proxmox
+  - as root ssh-copy-id to <proxmox-ip> && ensure your build machine can ssh to proxmox
+**STEP 2:** _clone and modify deploy.sh_
   - git clone https://github.com/foundrybot-ca/foundryBot.git && cd foundryBot
   - chmod +x deploy.sh
   - sudo su -
   - vim deploy.sh adjust to taste (the default usees vmid 2000-2010 10.100.10.0/24 and multiple wireguard networks for examples
-**STEP 4:** deploy the cluster, obtain coffee
+**STEP 3:** _deploy the cluster, obtain coffee_
   - ./deploy.sh
 
 # **VMS CREATED:**
@@ -58,7 +57,6 @@ Proxmox is the default “easy path” to show the idea.
 At this point you are left with a MASTER and blank 12 MINIONS, this is by design as you may choose to use your own configuration tools.
 
 BUT... I've also "pre-built" the master as a salt MASTER with predefined states that can be applied, and some basic cluster configuration tools and examples so you can build your own without starting from scratch.
-
 
 
 additionally: Ive included some sample commands to help you along..
