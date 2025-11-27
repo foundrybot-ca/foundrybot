@@ -25,13 +25,11 @@
 
 # STEP 2: DEPLOY
 
-At this point you are left with a MASTER and 12 MINIONS, basically blanks. Configure as you like with what ever tool you want to use, simply bind it to the internal wireguard ip and go.
+At this point you are left with a MASTER and blank 12 MINIONS, this is intentially splits up the process to allow for people to use their own tools to deploy the final workloads
 
 OR:
 
 Ive included the apporiate salt configuraion that will "magically" just build the whole world and also a basic set of tools to get you going.
-
-
 
 
 What you need (2 machines, that’s it)
