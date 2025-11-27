@@ -3,13 +3,12 @@
 # STEP 1: Install
   - Install proxmox using local-zfs
   - from your "build" machine as root ssh-copy-id <proxmox> select yes to accept, ensure you can ssh to proxmox
-  - https://github.com/foundrybot-ca/foundryBot.git
+  - git clone https://github.com/foundrybot-ca/foundryBot.git && cd foundryBot
   - chmod +x deploy.sh
   - sudo su -
   - vim deploy.sh adjust to taste (the default usees vmid 2000-2010 10.100.10.0/24 and multiple wireguard networks for examples
   - ./deploy.sh
 
-note: defualt vmID's 2000-2012
 -master, preconfigured with Salt/Ansible and optional Semaphore, keys are magically copied to minions (included)
 -prometheus, scrape your logs securely regardless of location, simply allow the udp port (optional)
 -grafana, automatically import your bootstrapped devices into pre-defined dashboards (optional) 
