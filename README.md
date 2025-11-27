@@ -32,7 +32,7 @@ Proxmox is the default “easy path” to show the idea.
 **STEP 1:** _Install the Target Hypervisor/HW_
   - Install proxmox to you TARGET server
   - as root **ssh-copy-id** to **proxmox** && ensure your **BUILD** machine can ssh to proxmox
-  - git clone https://github.com/foundrybot-ca/foundryBot.git && cd foundryBot
+  - git clone https://github.com/foundrybot-ca/foundryBot.git on your BUILD server
   - config as needed
   - chmod +x deploy.sh
   - sudo su -
