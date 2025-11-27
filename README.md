@@ -7,6 +7,7 @@ A Debian ISO (Trixie / 13.x works out of the box).
 Your SSH key (id_ed25519.pub) for the admin user.
 
 **** THIS SCRIPT IS DESIGNED TO TARGET A REMOTE HOST ****
+images are built and stored on the build server
 
 Install Packages to Build Server
 ```bash
