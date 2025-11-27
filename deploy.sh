@@ -362,7 +362,6 @@ ensure_enroll_keypair() {
   fi
 }
 
-
 SSH_OPTS="-q -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o ConnectTimeout=6 -o BatchMode=yes"
 sssh(){ ssh $SSH_OPTS "$@"; }
 sscp(){ scp -q $SSH_OPTS "$@"; }
