@@ -14,14 +14,14 @@
   -  master - preconfigured with Salt/Ansible and optional Semaphore, keys are magically copied to minions (included)
   -  prometheus - scrape your logs securely regardless of location, simply allow the udp port (optional)
   -  grafana - automatically import your bootstrapped devices into pre-defined dashboards (optional) 
-  -  k8s, jumphost (optional)
-  -  storage, storage netowrk backplane (note: 1420 mtu) (optional)
-  -  k8s-lb1, basic ha proxy loadbalancer x2
+  -  k8s - jumphost (optional)
+  -  storage - storage netowrk backplane (note: 1420 mtu) (optional)
+  -  k8s-lb1 - basic ha proxy loadbalancer x2
   -  k8s-lb2
-  -  k8s-cp1, k8s control nodes x3
+  -  k8s-cp1 - k8s control nodes x3
   -  k8s-cp2
   -  k8s-cp3
-  -  k8s-w1, k8s worker nodes x3
+  -  k8s-w1 - k8s worker nodes x3
   -  k8s-w2
   -  k8s-w3
 
