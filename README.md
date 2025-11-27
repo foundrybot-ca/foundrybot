@@ -30,7 +30,7 @@ Proxmox is the default “easy path” to show the idea.
 # **How To:**
 
 **STEP 1:** _Install the Target Hypervisor/HW_
-  - Install proxmox
+  - Install proxmox to you TARGET server
   - as root ssh-copy-id to <proxmox-ip> && ensure your build machine can ssh to proxmox
   - git clone https://github.com/foundrybot-ca/foundryBot.git && cd foundryBot
   - config as needed
