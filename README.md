@@ -11,9 +11,9 @@
 
 
 # VMS CREATED:
-  -  master preconfigured with Salt/Ansible and optional Semaphore, keys are magically copied to minions (included)
-  -  prometheus, scrape your logs securely regardless of location, simply allow the udp port (optional)
-  -  grafana, automatically import your bootstrapped devices into pre-defined dashboards (optional) 
+  -  master - preconfigured with Salt/Ansible and optional Semaphore, keys are magically copied to minions (included)
+  -  prometheus - scrape your logs securely regardless of location, simply allow the udp port (optional)
+  -  grafana - automatically import your bootstrapped devices into pre-defined dashboards (optional) 
   -  k8s, jumphost (optional)
   -  storage, storage netowrk backplane (note: 1420 mtu) (optional)
   -  k8s-lb1, basic ha proxy loadbalancer x2
