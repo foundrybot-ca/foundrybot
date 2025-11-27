@@ -1,5 +1,4 @@
 <https://foundrybot.ca>
-```
 # foundryBot is a one-touch deployment kit.
 
 It’s a single Bash script that takes a stock Debian ISO, builds a small set of secure hardware/VM images, and boots them into a ready-to-manage cluster with a private WireGuard network already online.
@@ -28,4 +27,3 @@ it just builds signed images and talks to whatever can load them.
 Proxmox is the default “easy path” to show the idea.
 
 # clonebot.sh - point and shoot template builder/deployment script with cpef and zfs zvols
-```
