@@ -53,14 +53,9 @@ Proxmox is the default “easy path” to show the idea.
   -  **k8s-w3**
 
 # ** STEP 2: DEPLOY Configuration**
+At this point you are left with a MASTER and 12 blank MINIONS, this is by design to allow for existing tools to takeover,build or re-deployments and netwrok meshes
 
-At this point you are left with a MASTER and blank 12 MINIONS, this is by design as you may choose to use your own configuration tools.
-
-BUT... I've also "pre-built" the master as a salt MASTER with predefined states that can be applied, and some basic cluster configuration tools and examples so you can build your own without starting from scratch.
-
-
-additionally: Ive included some sample commands to help you along..
-simply type "shl" from thee root terminal for help
+BUT, Ive also included a couplee of tools to get you started.
 
 **# Optional**
 The script can also be deployed via EXPORTS and called from cron for "timed" deployments, ie: spin up at 7am, teardown at 4pm .. power off.
