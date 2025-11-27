@@ -1,5 +1,5 @@
 <https://foundrybot.ca>
-# foundryBot is a one-touch deployment kit.
+## foundryBot is a one-touch deployment kit.
 
 It’s a single Bash script that takes a stock Debian ISO, builds a small set of secure hardware/VM images, and boots them into a ready-to-manage cluster with a private WireGuard network already online.
 
