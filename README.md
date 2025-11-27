@@ -52,13 +52,15 @@ Bare-metal box that can boot UEFI images.
 The script can also be deployed via EXPORTS
 
 Examples:
-```bash - deploy to proxmox using the script defaults
+Deploy to proxmox using the script defaults
+```bash
 ISO_ORIG=/root/debian-13.1.0-amd64-netinst.iso \
 TARGET=proxmox-all \
 ./deploy.sh
 ```
 
-```bash - Proxmox cluster on dragon with custom admin + GNOME
+Proxmox cluster on dragon with custom admin + GNOME
+```bash
 ISO_ORIG=/root/debian-13.1.0-amd64-netinst.iso \
 INPUT=2 \                             # 2|dragon -> 10.100.10.226
 TARGET=proxmox-cluster \
