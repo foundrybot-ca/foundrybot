@@ -5,7 +5,6 @@ Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
 Your SSH key (id_ed25519.pub) for the admin user.
 
-recomended package list, however only the first section is required
 ```bash
 sudo apt-get update && sudo apt-get install -y \
   # --- ISO / boot tooling ---
@@ -13,7 +12,10 @@ sudo apt-get update && sudo apt-get install -y \
   syslinux-common isolinux \
   grub-pc-bin grub-efi-amd64-bin \
   squashfs-tools genisoimage \
-  mtools dosfstools \
+  mtools dosfstools
+```
+recomended
+```
   # --- filesystem / disk image plumbing ---
   debootstrap \
   parted gdisk e2fsprogs \
@@ -22,7 +24,10 @@ sudo apt-get update && sudo apt-get install -y \
   curl wget ca-certificates \
   jq \
   rsync pv \
-  # --- dev / glue ---
+```
+optional
+```
+# --- dev / glue ---
   git \
   python3 python3-venv python3-pip \
   unzip zip p7zip-full \
