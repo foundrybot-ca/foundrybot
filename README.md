@@ -36,7 +36,6 @@ I've also "pre-built" salt states that can be applied, this will laydown ALL of 
 additionally: Ive included some sample commands to help you along..
 simply type "shl" from thee root terminal for help
 
-
 # Notes:
 ## 1. A build machine
 Any modern Linux box (laptop, workstation, or another VM).
@@ -48,10 +47,3 @@ Your SSH key (id_ed25519.pub) for the admin user.
 Proxmox node (this example), or
 Cloud account (AWS / other KVM-based clouds), or
 Bare-metal box that can boot UEFI images.
-
-# The script itself is agnostic:
-
-it just builds signed images and talks to whatever can load them.
-Proxmox is the default “easy path” to show the idea.
-
-# clonebot.sh - point and shoot template builder/deployment script with cpef and zfs zvols
