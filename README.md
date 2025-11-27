@@ -44,26 +44,27 @@ Cloud account (AWS / other KVM-based clouds), or
 Bare-metal box that can boot UEFI images.
 The script itself is agnostic: it just builds signed images and talks to whatever can load them. Proxmox is the default “easy path” to show the idea.
 
+
 ## How To:
 
-#STEP 1: Install the Target Hypervisor/HW
+**STEP 1:** Install the Target Hypervisor/HW
   - Install proxmox using local-zfs
-#STEP 2: build/use a "build" machine &&
+**STEP 2:** build/use a "build" machine &&
   - as root ssh-copy-id <proxmox-ip> && ensure you can ssh to proxmox
-#STEP 3: clone and modify deploy.sh     
+**STEP 3:** clone and modify deploy.sh     
   - git clone https://github.com/foundrybot-ca/foundryBot.git && cd foundryBot
   - chmod +x deploy.sh
   - sudo su -
   - vim deploy.sh adjust to taste (the default usees vmid 2000-2010 10.100.10.0/24 and multiple wireguard networks for examples
-#STEP 4: deploy the cluster, obtain coffee
+**STEP 4:** deploy the cluster, obtain coffee
   - ./deploy.sh
 
-# VMS CREATED:
-  -  master - preconfigured with Salt/Ansible and optional Semaphore, keys are magically copied to minions (included)
-  -  prometheus - scrape your logs securely regardless of location, simply allow the udp port (optional)
-  -  grafana - automatically import your bootstrapped devices into pre-defined dashboards (optional) 
-  -  k8s - jumphost (optional)
-  -  storage - storage netowrk backplane (note: 1420 mtu) (optional)
+# **VMS CREATED:**
+  -  **master** - preconfigured with Salt/Ansible and optional Semaphore, keys are magically copied to minions (included)
+  -  **prometheus** - scrape your logs securely regardless of location, simply allow the udp port (optional)
+  -  **grafana** - automatically import your bootstrapped devices into pre-defined dashboards (optional) 
+  -  **k8s** - jumphost (optional)
+  -  **storage** - storage netowrk backplane (note: 1420 mtu) (optional)
   -  k8s-lb1 - basic ha proxy loadbalancer x2
   -  k8s-lb2
   -  k8s-cp1 - k8s control nodes x3
