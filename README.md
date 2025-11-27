@@ -1,7 +1,7 @@
 # ** Requirements:**
 
-1. **A build machind**
-Any modern Linux box (laptop, workstation, or another VM).
+1. **A build machind** Where the ./deploy.sh will be executed **FROM**
+Any modern Linux box will do (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
 Your SSH key (id_ed25519.pub) for the admin user.
