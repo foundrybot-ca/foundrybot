@@ -43,10 +43,12 @@ sudo apt-get update && sudo apt-get install -y \
 Proxmox node (this example), or
 Cloud account (AWS / other KVM-based clouds), or
 Bare-metal box that can boot UEFI images.
-The script itself is agnostic: it just builds signed images and talks to whatever can load them. Proxmox is the default “easy path” to show the idea.
 
+The script itself is agnostic: 
+it just builds signed images and talks to whatever can load them. 
+Proxmox is the default “easy path” to show the idea.
 
-**## How To:**
+# **How To:**
 
 **STEP 1:** Install the Target Hypervisor/HW
   - Install proxmox using local-zfs
@@ -75,13 +77,13 @@ The script itself is agnostic: it just builds signed images and talks to whateve
   -  **k8s-w2**
   -  **k8s-w3**
 
-**# STEP 2: DEPLOY**
+# ** STEP 2: DEPLOY Configuration**
 
-At this point you are left with a MASTER and blank 12 MINIONS, this ensures if you wish to use your own tools, you have a clean base to deploy to.
+At this point you are left with a MASTER and blank 12 MINIONS, this is by design as you may choose to use your own configuration tools.
 
-OR:
+BUT... I've also "pre-built" the master as a salt MASTER with predefined states that can be applied, and some basic cluster configuration tools and examples so you can build your own without starting from scratch.
 
-I've also "pre-built" salt states that can be applied, this will laydown ALL of the packages and sets up the entire envrioment
+
 
 additionally: Ive included some sample commands to help you along..
 simply type "shl" from thee root terminal for help
