@@ -1,11 +1,39 @@
 ## How To:
 
-Step 1: 
+# STEP 1: Install
   - Install proxmox using local-zfs
-Step 2:
   - from your "build" machine as root ssh-copy-id <proxmox> select yes to accept, ensure you cah ssh to proxmox
-Step 3:
   - https://github.com/foundrybot-ca/foundryBot.git
+  - chmod +x deploy.sh
+  - sudo su -
+  - vim deploy.sh adjust to taste (the default usees vmid 2000-2010 10.100.10.0/24 and multiple wireguard networks for examples
+  - ./deploy.sh
+
+note: defualt vmID's 2000-2012
+-master, preconfigured with Salt/Ansible and optional Semaphore, keys are magically copied to minions (included)
+-prometheus, scrape your logs securely regardless of location, simply allow the udp port (optional)
+-grafana, automatically import your bootstrapped devices into pre-defined dashboards (optional) 
+-k8s, optional jumphost
+-storage, storage netowrk backplane (note: 1420 mtu) (optional)
+-k8s-lb1, basic ha proxy loadbalancer x2
+-k8s-lb2
+-k8s-cp1, k8s control nodes x3
+-k8s-cp2
+-k8s-cp3
+-k8s-w1, k8s worker nodes x3
+-k8s-w2
+-k8s-w3
+
+# STEP 2: DEPLOY
+
+At this point you are left with a MASTER and 12 MINIONS, basically blanks. Configure as you like with what ever tool you want to use, simply bind it to the internal wireguard ip and go.
+
+OR:
+
+Ive included the apporiate salt configuraion that will "magically" just build the whole world and also a basic set of tools to get you going.
+
+
+
 
 What you need (2 machines, that’s it)
 
