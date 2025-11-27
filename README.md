@@ -5,6 +5,32 @@ Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
 Your SSH key (id_ed25519.pub) for the admin user.
 
+recomended package list, however only the first section is required
+```bash
+sudo apt-get update && sudo apt-get install -y \
+  # --- ISO / boot tooling ---
+  xorriso \
+  syslinux-common isolinux \
+  grub-pc-bin grub-efi-amd64-bin \
+  squashfs-tools genisoimage \
+  mtools dosfstools \
+  # --- filesystem / disk image plumbing ---
+  debootstrap \
+  parted gdisk e2fsprogs \
+  qemu-utils qemu-system-x86 ovmf \
+  # --- network / fetch / scripting ---
+  curl wget ca-certificates \
+  jq \
+  rsync pv \
+  # --- dev / glue ---
+  git \
+  python3 python3-venv python3-pip \
+  unzip zip p7zip-full \
+  # --- cloud / automation helpers ---
+  awscli \
+  packer
+```
+
 2. A target
 Proxmox node (this example), or
 Cloud account (AWS / other KVM-based clouds), or
