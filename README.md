@@ -1,8 +1,11 @@
 ## How To:
 
-Step 1: Install proxmox using local-zfs
-Step 2: from your "build" machine as root ssh-copy-id <proxmox> select yes to accept, ensure you cah ssh to proxmox
-Step 3: https://github.com/foundrybot-ca/foundryBot.git
+Step 1: 
+  - Install proxmox using local-zfs
+Step 2:
+  - from your "build" machine as root ssh-copy-id <proxmox> select yes to accept, ensure you cah ssh to proxmox
+Step 3:
+  - https://github.com/foundrybot-ca/foundryBot.git
 
 What you need (2 machines, that’s it)
 
