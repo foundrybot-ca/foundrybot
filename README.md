@@ -25,14 +25,14 @@
 
 # STEP 2: DEPLOY
 
-At this point you are left with a MASTER and blank 12 MINIONS, this is intentially splits up the process to allow for people to use their own tools to deploy the final workloads
+At this point you are left with a MASTER and blank 12 MINIONS, this ensures if you wish to use your own tools, you have a clean base to deploy to.
 
 OR:
 
-Ive included the apporiate salt configuraion that will "magically" just build the whole world and also a basic set of tools to get you going.
+I've also "pre-built" salt states that can be applied, this will laydown ALL of the packages and sets up the entire envrioment
 
-
-What you need (2 machines, that’s it)
+additionally: Ive included some sample commands to help you along..
+simply type "shl" from thee root terminal for help
 
 
 # Notes:
