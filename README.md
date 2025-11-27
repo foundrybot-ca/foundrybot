@@ -27,7 +27,7 @@ The script itself is agnostic:
 it just builds signed images and talks to whatever can load them. 
 Proxmox is the default “easy path” to show the idea.
 
-# **How To:**
+# **INSTALL & EXECUTE**
 
 **STEP 1:** _Install the Target Hypervisor/HW_
   - Install proxmox to you TARGET server
