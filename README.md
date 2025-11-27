@@ -6,6 +6,8 @@ Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
 Your SSH key (id_ed25519.pub) for the admin user.
 
+**** DO NOT NOT USE THIS SCRIPT on the local host your deploying to ****
+
 install:
 ```bash
 sudo apt-get update && sudo apt-get install -y \
