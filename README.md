@@ -7,7 +7,7 @@ A Debian ISO (Trixie / 13.x works out of the box).
 Your SSH key (id_ed25519.pub) for the admin user.
 
 **** THIS SCRIPT IS NOT TO BE USED LOCALLY on host your deploying TO ****
-It is a REMOTE deployment tool, such as Terraform
+It acts like a REMOTE deployment tool, such as Terraform
 
 install:
 ```bash
