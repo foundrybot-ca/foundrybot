@@ -6,8 +6,7 @@ Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
 Your SSH key (id_ed25519.pub) for the admin user.
 
-**** THIS SCRIPT IS NOT TO BE USED LOCALLY on host your deploying TO ****
-It acts like a REMOTE deployment tool, such as Terraform
+**** THIS SCRIPT IS DESIGNED TO TARGET A REMOTE HOST ****
 
 Install Packages to Build Server
 ```bash
