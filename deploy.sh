@@ -2245,118 +2245,417 @@ write_bashrc() {
   local BASHRC=/etc/skel/.bashrc
 
   cat > "$BASHRC" <<'EOF'
-# ~/.bashrc -- powerful defaults
+# ~/.bashrc - foundryBot cluster console
 
 # If not running interactively, don't do anything
 [ -z "$PS1" ] && return
 
-# Prompt
-PS1='\[\e[0;32m\]\u@\h\[\e[m\]:\[\e[0;34m\]\w\[\e[m\]\$ '
-
-# History with timestamps
+# -------------------------------------------------------------------
+# History, shell options, basic prompt
+# -------------------------------------------------------------------
 HISTSIZE=10000
 HISTFILESIZE=20000
 HISTTIMEFORMAT='%F %T '
 HISTCONTROL=ignoredups:erasedups
+
 shopt -s histappend
 shopt -s checkwinsize
 shopt -s cdspell
 
-# Color grep
-alias grep='grep --color=auto'
+# Basic prompt (will be overridden below with colorized variant)
+PS1='\u@\h:\w\$ '
 
-# ls aliases
-alias ls='ls --color=auto'
-alias ll='ls -alF'
-alias la='ls -A'
-alias l='ls -CF'
+# -------------------------------------------------------------------
+# Banner
+# -------------------------------------------------------------------
+fb_banner() {
+  cat << 'EOF'
+   ___                           __                  ______          __
+ /'___\                         /\ \                /\     \        /\ \__
+/\ \__/  ___   __  __    ___    \_\ \  _ __   __  __\ \ \L\ \    ___\ \ ,_\
+\ \ ,__\/ __`\/\ \/\ \ /' _ `\  /'_` \/\`'__\/\ \/\ \\ \  _ <'  / __`\ \ \/
+ \ \ \_/\ \L\ \ \ \_\ \/\ \/\ \/\ \L\ \ \ \/ \ \ \_\ \\ \ \L\ \/\ \L\ \ \ \_
+  \ \_\\ \____/\ \____/\ \_\ \_\ \___,_\ \_\  \/`____ \\ \____/\ \____/\ \__\
+   \/_/ \/___/  \/___/  \/_/\/_/\/__,_ /\/_/   `/___/> \\/___/  \/___/  \/__/
+                                                  /\___/
+                                                  \/__/
+           secure cluster deploy & control
+EOF
+}
 
-# Safe file ops
+# Only show once per interactive session
+if [ -z "$FBNOBANNER" ]; then
+  fb_banner
+  export FBNOBANNER=1
+fi
+
+# -------------------------------------------------------------------
+# Colorized prompt (root vs non-root)
+# -------------------------------------------------------------------
+if [ "$EUID" -eq 0 ]; then
+  PS1='\[\e[1;31m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+else
+  PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+fi
+
+# -------------------------------------------------------------------
+# Bash completion
+# -------------------------------------------------------------------
+if [ -f /etc/bash_completion ]; then
+  # shellcheck source=/etc/bash_completion
+  . /etc/bash_completion
+fi
+
+# -------------------------------------------------------------------
+# Basic quality-of-life aliases
+# -------------------------------------------------------------------
 alias cp='cp -i'
 alias mv='mv -i'
 alias rm='rm -i'
+
+alias ls='ls --color=auto'
+alias ll='ls -alF --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+alias grep='grep --color=auto'
+alias e='${EDITOR:-vim}'
+alias vi='vim'
 
 # Net & disk helpers
 alias ports='ss -tuln'
 alias df='df -h'
 alias du='du -h'
-
 alias tk='tmux kill-server'
 
-# Load bash completion if available
-if [ -f /etc/bash_completion ]; then
-  . /etc/bash_completion
-fi
+# -------------------------------------------------------------------
+# Salt cluster helper commands
+# -------------------------------------------------------------------
 
-# Wide minion list:
-alias slist='salt --static --no-color --out=json --out-indent=-1 "*" grains.item host os osrelease ipv4 num_cpus mem_total roles \
-| jq -r '"'"'to_entries[]
-| .key as $id
-| .value as $v
-| ($v.ipv4 // []
-   | map(select(. != "127.0.0.1" and . != "0.0.0.0"))
-   | join("  ")) as $ips
-| [
-    $id,
-    $v.host,
-    ($v.os + " " + $v.osrelease),
-    $ips,
-    $v.num_cpus,
-    $v.mem_total,
-    ($v.roles // "")
-  ]
-| @tsv'"'"' \
-| sort -k1,1'
+# Wide minion list as a table
+slist() {
+  salt --static --no-color --out=json --out-indent=-1 "*" \
+    grains.item host os osrelease ipv4 num_cpus mem_total roles \
+  | jq -r '
+      to_entries[]
+      | .key as $id
+      | .value as $v
+      | ($v.ipv4 // []
+         | map(select(. != "127.0.0.1" and . != "0.0.0.0"))
+         | join("  ")) as $ips
+      | [
+          $id,
+          $v.host,
+          ($v.os + " " + $v.osrelease),
+          $ips,
+          $v.num_cpus,
+          $v.mem_total,
+          ($v.roles // "")
+        ]
+      | @tsv
+    ' \
+  | sort -k1,1
+}
 
-alias ssall='salt "*" cmd.run "ss -tnlp || netstat -tnlp"'
-alias sping='salt "*" test.ping'
-alias skservices='salt "*" service.status kubelet containerd'
-alias sdfall='salt "*" cmd.run "df -hT --exclude-type=tmpfs --exclude-type=devtmpfs"'
-alias stop5='salt "*" cmd.run "ps aux --sort=-%cpu | head -n 5"'
-alias smem5='salt "*" cmd.run "ps aux --sort=-%mem | head -n 5"'
-alias skvers='echo "== kubelet versions =="; salt "*" cmd.run "kubelet --version 2>/dev/null || echo no-kubelet"; echo; echo "== kubectl client versions =="; salt "*" cmd.run "kubectl version --client --short 2>/dev/null || echo no-kubectl"'
+sping()      { salt "*" test.ping; }
+ssall()      { salt "*" cmd.run 'ss -tnlp || netstat -tnlp'; }
+skservices() { salt "*" service.status kubelet containerd; }
+sdfall()     { salt "*" cmd.run 'df -hT --exclude-type=tmpfs --exclude-type=devtmpfs'; }
+stop5()      { salt "*" cmd.run 'ps aux --sort=-%cpu | head -n 5'; }
+smem5()      { salt "*" cmd.run 'ps aux --sort=-%mem | head -n 5'; }
 
-alias shl='printf "%s\n" \
+skvers() {
+  echo "== kubelet versions =="
+  salt "*" cmd.run 'kubelet --version 2>/dev/null || echo no-kubelet'
+  echo
+  echo "== kubectl client versions =="
+  salt "*" cmd.run 'kubectl version --client --short 2>/dev/null || echo no-kubectl'
+}
+
+# "World" apply helpers – tweak state names to your liking
+fb_world() {
+  # Top-level world state for all minions
+  echo "Applying 'world' state to all minions..."
+  salt "*" state.apply world
+}
+
+fb_k8s_cluster() {
+  # Apply k8s cluster state to control-plane + workers
+  echo "Applying 'k8s.cluster' to role:k8s_cp and role:k8s_worker..."
+  salt -C 'G@role:k8s_cp or G@role:k8s_worker' state.apply k8s.cluster
+}
+
+# -------------------------------------------------------------------
+# Kubernetes helper commands (Salt-powered via role:k8s_cp)
+# -------------------------------------------------------------------
+
+# Core cluster info
+skcls()   { salt -G "role:k8s_cp" cmd.run 'kubectl cluster-info'; }
+sknodes() { salt -G "role:k8s_cp" cmd.run 'kubectl get nodes -o wide'; }
+skpods()  { salt -G "role:k8s_cp" cmd.run 'kubectl get pods -A -o wide'; }
+sksys()   { salt -G "role:k8s_cp" cmd.run 'kubectl get pods -n kube-system -o wide'; }
+sksvc()   { salt -G "role:k8s_cp" cmd.run 'kubectl get svc -A -o wide'; }
+sking()   { salt -G "role:k8s_cp" cmd.run 'kubectl get ingress -A -o wide'; }
+skapi()   { salt -G "role:k8s_cp" cmd.run 'kubectl api-resources | column -t'; }
+
+# Health & metrics
+skready() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get nodes -o json | jq -r ".items[] | [.metadata.name, (.status.conditions[] | select(.type==\"Ready\").status)] | @tsv"'
+}
+
+sktop() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl top nodes 2>/dev/null || echo metrics-server-not-installed'
+}
+
+sktopp() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl top pods -A --use-protocol-buffers 2>/dev/null || echo metrics-server-not-installed'
+}
+
+skevents() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get events -A --sort-by=.lastTimestamp | tail -n 40'
+}
+
+skdescribe() {
+  if [ -z "$1" ]; then
+    echo "Usage: skdescribe <pod> [namespace]"
+    return 1
+  fi
+  local pod="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl describe pod $pod -n $ns"
+}
+
+# Workload inventory
+skdeploy() { salt -G "role:k8s_cp" cmd.run 'kubectl get deploy -A -o wide'; }
+skrs()     { salt -G "role:k8s_cp" cmd.run 'kubectl get rs -A -o wide'; }
+sksts()    { salt -G "role:k8s_cp" cmd.run 'kubectl get statefulset -A -o wide'; }
+skdaemon() { salt -G "role:k8s_cp" cmd.run 'kubectl get daemonset -A -o wide'; }
+
+# Labels & annotations
+sklabel() {
+  if [ $# -lt 2 ]; then
+    echo "Usage: sklabel <key>=<value> <pod> [namespace]"
+    return 1
+  fi
+  local kv="$1"
+  local pod="$2"
+  local ns="${3:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl label pod $pod -n $ns $kv --overwrite"
+}
+
+skannot() {
+  if [ $# -lt 2 ]; then
+    echo "Usage: skannot <key>=<value> <pod> [namespace]"
+    return 1
+  fi
+  local kv="$1"
+  local pod="$2"
+  local ns="${3:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl annotate pod $pod -n $ns $kv --overwrite"
+}
+
+# Networking
+sknetpol() { 
+  salt -G "role:k8s_cp" cmd.run 'kubectl get networkpolicies -A -o wide'
+}
+
+skcni() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get pods -n kube-flannel -o wide 2>/dev/null || kubectl get pods -n kube-system | grep -i cni'
+}
+
+sksvcips() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get svc -A -o json | jq -r ".items[]|[.metadata.namespace,.metadata.name,.spec.clusterIP]|@tsv"'
+}
+
+skdns() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide 2>/dev/null || kubectl get pods -n kube-system | grep -i coredns'
+}
+
+# Logs
+sklog() {
+  if [ -z "$1" ]; then
+    echo "Usage: sklog <pod> [namespace]"
+    return 1
+  fi
+  local pod="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl logs $pod -n $ns --tail=200"
+}
+
+sklogf() {
+  if [ -z "$1" ]; then
+    echo "Usage: sklogf <pod> [namespace]"
+    return 1
+  fi
+  local pod="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl logs $pod -n $ns -f"
+}
+
+sklogs_ns() {
+  local ns="${1:-default}"
+  salt -G "role:k8s_cp" cmd.run \
+    "kubectl get pods -n $ns -o json \
+      | jq -r '.items[].metadata.name' \
+      | xargs -I {} kubectl logs {} -n $ns --tail=40"
+}
+
+# Container runtime & node diag
+skcri()   { salt -G "role:k8s_cp" cmd.run 'crictl ps -a 2>/dev/null || echo no-cri-tools'; }
+skdmesg() { salt "*" cmd.run 'dmesg | tail -n 25'; }
+skoom()   { salt "*" cmd.run 'journalctl -k -g OOM -n 20 --no-pager'; }
+
+# Rollouts & node lifecycle
+skroll() {
+  if [ -z "$1" ]; then
+    echo "Usage: skroll <deployment> [namespace]"
+    return 1
+  fi
+  local deploy="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl rollout restart deploy/$deploy -n $ns"
+}
+
+skundo() {
+  if [ -z "$1" ]; then
+    echo "Usage: skundo <deployment> [namespace]"
+    return 1
+  fi
+  local deploy="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl rollout undo deploy/$deploy -n $ns"
+}
+
+skdrain() {
+  if [ -z "$1" ]; then
+    echo "Usage: skdrain <node>"
+    return 1
+  fi
+  local node="$1"
+  salt -G "role:k8s_cp" cmd.run "kubectl drain $node --ignore-daemonsets --force --delete-emptydir-data"
+}
+
+skuncordon() {
+  if [ -z "$1" ]; then
+    echo "Usage: skuncordon <node>"
+    return 1
+  fi
+  local node="$1"
+  salt -G "role:k8s_cp" cmd.run "kubectl uncordon $node"
+}
+
+skcordon() {
+  if [ -z "$1" ]; then
+    echo "Usage: skcordon <node>"
+    return 1
+  fi
+  local node="$1"
+  salt -G "role:k8s_cp" cmd.run "kubectl cordon $node"
+}
+
+# Security / certs / RBAC
+skrbac() { 
+  salt -G "role:k8s_cp" cmd.run 'kubectl get roles,rolebindings -A -o wide'
+}
+
+sksa() {
+  salt -G "role:k8s_cp" cmd.run 'kubectl get sa -A -o wide'
+}
+
+skcerts() {
+  salt -G "role:k8s_cp" cmd.run \
+    'for i in /etc/kubernetes/pki/*.crt; do echo "== $(basename "$i") =="; openssl x509 -in "$i" -text -noout | head -n 10; echo; done'
+}
+
+# Show-offs
+skpodsmap() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get pods -A -o json | jq -r ".items[] | [.metadata.namespace,.metadata.name,.status.podIP,(.spec.containers|length),.spec.nodeName] | @tsv"'
+}
+
+sktopcpu() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl top pod -A 2>/dev/null | sort -k3 -r | head -n 15'
+}
+
+# -------------------------------------------------------------------
+# Helper: print cheat sheet of all the good stuff
+# -------------------------------------------------------------------
+shl() {
+  printf "%s\n" \
 "Salt / cluster helper commands:" \
-"  slist      - List all minions in a wide table" \
-"  sping      - Ping all minions via Salt (test.ping)." \
-"  ssall      - Show listening TCP sockets on all minions (ss/netstat)." \
-"  skservices - Check kubelet and containerd service status on all minions." \
-"  skvers     - Show kubelet and kubectl versions on all minions." \
-"  sdfall     - Show disk usage (df -hT, no tmpfs/devtmpfs) on all minions." \
-"  stop5      - Top 5 CPU-hungry processes on each minion." \
-"  smem5      - Top 5 memory-hungry processes on each minion." \
+"  slist         - List all minions in a wide table (id, host, OS, IPs, CPU, RAM, roles)." \
+"  sping         - Ping all minions via Salt (test.ping)." \
+"  ssall         - Show listening TCP sockets on all minions (ss/netstat)." \
+"  skservices    - Check kubelet and containerd service status on all minions." \
+"  skvers        - Show kubelet and kubectl versions on all minions." \
+"  sdfall        - Show disk usage (df -hT, no tmpfs/devtmpfs) on all minions." \
+"  stop5         - Top 5 CPU-hungry processes on each minion." \
+"  smem5         - Top 5 memory-hungry processes on each minion." \
+"  fb_world      - Apply top-level 'world' Salt state to all minions." \
+"  fb_k8s_cluster- Apply 'k8s.cluster' state to CP + workers." \
+"" \
+"Kubernetes cluster helpers (via role:k8s_cp):" \
+"  skcls         - Show cluster-info." \
+"  sknodes       - List nodes (wide)." \
+"  skpods        - List all pods (all namespaces, wide)." \
+"  sksys         - Show kube-system pods." \
+"  sksvc         - List all services." \
+"  sking         - List all ingresses." \
+"  skapi         - Show API resources." \
+"  skready       - Show node Ready status." \
+"  sktop         - Node CPU/mem usage (if metrics-server installed)." \
+"  sktopp        - Pod CPU/mem usage (if metrics-server installed)." \
+"  skevents      - Tail the last cluster events." \
+"  skdeploy      - List deployments (all namespaces)." \
+"  sksts         - List StatefulSets." \
+"  skdaemon      - List DaemonSets." \
+"  sknetpol      - List NetworkPolicies." \
+"  sksvcips      - Map svc -> ClusterIP." \
+"  skdns         - Show cluster DNS pods." \
+"  sklog         - Show logs for a pod: sklog <pod> [ns]." \
+"  sklogf        - Follow logs for a pod: sklogf <pod> [ns]." \
+"  sklogs_ns     - Tail logs for all pods in a namespace." \
+"  skroll        - Restart a deployment: skroll <deploy> [ns]." \
+"  skundo        - Rollback a deployment: skundo <deploy> [ns]." \
+"  skdrain       - Drain a node." \
+"  skcordon      - Cordon a node." \
+"  skuncordon    - Uncordon a node." \
+"  skrbac        - List Roles and RoleBindings." \
+"  sksa          - List ServiceAccounts." \
+"  skcerts       - Dump brief info about control-plane certs." \
+"  skpodsmap     - Pretty map of pods (ns, name, IP, containers, node)." \
+"  sktopcpu      - Top 15 CPU-hungry pods." \
 "" \
 "Other:" \
-"  cp         - cp -i (prompt before overwrite)." \
-"  ll/la/l    - ls variants." \
-""' \
+"  cp/mv/rm      - Interactive (prompt before overwrite/delete)." \
+"  ll/la/l       - ls variants." \
+"  e, vi         - Open \$EDITOR (vim by default)." \
+""
+}
 
-# Auto-activate BCC virtualenv if present
+# -------------------------------------------------------------------
+# Auto-activate BCC virtualenv (if present)
+# -------------------------------------------------------------------
 VENV_DIR="/root/bccenv"
-if [ -d "$VENV_DIR" ]; then
-  if [ -n "$PS1" ]; then
+if [ -d "$VENV_DIR" ] && [ -n "$PS1" ]; then
+  if [ -z "$VIRTUAL_ENV" ] || [ "$VIRTUAL_ENV" != "$VENV_DIR" ]; then
+    # shellcheck source=/dev/null
     source "$VENV_DIR/bin/activate"
   fi
 fi
 
-# Custom: Show welcome on login
-echo "$USER! Connected to: $(hostname) on $(date)"
-EOF
-
-  log ".bashrc written to /etc/skel/.bashrc"
-
-  for USERNAME in root ansible debian; do
-    HOME_DIR=$(eval echo "~$USERNAME")
-    if [ -d "$HOME_DIR" ]; then
-      cp "$BASHRC" "$HOME_DIR/.bashrc"
-      chown "$USERNAME:$USERNAME" "$HOME_DIR/.bashrc"
-      log "Updated .bashrc for $USERNAME"
-    else
-      log "Skipped .bashrc update for $USERNAME (home not found)"
-    fi
-  done
-
+# -------------------------------------------------------------------
+# Friendly login line
+# -------------------------------------------------------------------
+echo "Welcome $USER — connected to $(hostname) on $(date)"
+echo "Type 'shl' for the foundryBot helper command list."
 }
 
 # -----------------------------------------------------------------------------
