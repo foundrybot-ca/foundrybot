@@ -65,16 +65,16 @@ The script itself is agnostic: it just builds signed images and talks to whateve
   -  **grafana** - automatically import your bootstrapped devices into pre-defined dashboards (optional) 
   -  **k8s** - jumphost (optional)
   -  **storage** - storage netowrk backplane (note: 1420 mtu) (optional)
-  -  k8s-lb1 - basic ha proxy loadbalancer x2
-  -  k8s-lb2
-  -  k8s-cp1 - k8s control nodes x3
-  -  k8s-cp2
-  -  k8s-cp3
-  -  k8s-w1 - k8s worker nodes x3
-  -  k8s-w2
-  -  k8s-w3
+  -  **k8s-lb1** - basic ha proxy loadbalancer x2
+  -  **k8s-lb2**
+  -  **k8s-cp1** - k8s control nodes x3
+  -  **k8s-cp2**
+  -  **k8s-cp3**
+  -  **k8s-w1** - k8s worker nodes x3
+  -  **k8s-w2**
+  -  **k8s-w3**
 
-# STEP 2: DEPLOY
+**# STEP 2: DEPLOY**
 
 At this point you are left with a MASTER and blank 12 MINIONS, this ensures if you wish to use your own tools, you have a clean base to deploy to.
 
@@ -85,20 +85,8 @@ I've also "pre-built" salt states that can be applied, this will laydown ALL of 
 additionally: Ive included some sample commands to help you along..
 simply type "shl" from thee root terminal for help
 
-# Notes:
-## 1. A build machine
-Any modern Linux box (laptop, workstation, or another VM).
-Bash + standard tools (curl, xorriso, qemu-img, etc.).
-A Debian ISO (Trixie / 13.x works out of the box).
-Your SSH key (id_ed25519.pub) for the admin user.
-
-## 2. A target
-Proxmox node (this example), or
-Cloud account (AWS / other KVM-based clouds), or
-Bare-metal box that can boot UEFI images.
-
-# Optional,
-The script can also be deployed via EXPORTS
+**# Optional**
+The script can also be deployed via EXPORTS and called from cron for "timed" deployments, ie: spin up at 7am, teardown at 4pm .. power off.
 
 Examples:
 Deploy to proxmox using the script defaults
@@ -117,4 +105,3 @@ ADMIN_USER=admin \
 GUI_PROFILE=gnome \
 ./deploy.sh
 ```
-
