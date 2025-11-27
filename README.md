@@ -1,6 +1,6 @@
 # ** Requirements:**
 
-1. **A build machine** AKA where the **./deploy.sh** will be executed **FROM**
+1. **A build machine** where the **./deploy.sh** will be executed **FROM**
 Any modern Linux box will do (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
