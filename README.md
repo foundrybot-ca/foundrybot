@@ -1,4 +1,4 @@
-**# Requirements:**
+**Requirements:**
 **1. A build machine**
 Any modern Linux box (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
