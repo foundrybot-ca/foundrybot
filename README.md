@@ -1,5 +1,5 @@
-# Requirements:
-1. A build machine
+**# Requirements:**
+**1. A build machine**
 Any modern Linux box (laptop, workstation, or another VM).
 Bash + standard tools (curl, xorriso, qemu-img, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).
@@ -14,7 +14,7 @@ sudo apt-get update && sudo apt-get install -y \
   squashfs-tools genisoimage \
   mtools dosfstools
 ```
-recomended
+**Recomended**
 ```
 sudo apt-get update && sudo apt-get install -y \
   # --- filesystem / disk image plumbing ---
@@ -26,7 +26,7 @@ sudo apt-get update && sudo apt-get install -y \
   jq \
   rsync pv
 ```
-optional
+**Optional**
 ```
 sudo apt-get update && sudo apt-get install -y \
 # --- dev / glue ---
@@ -38,14 +38,14 @@ sudo apt-get update && sudo apt-get install -y \
   packer
 ```
 
-2. A target
+**2. A target HW Hypervisor/Server**
 Proxmox node (this example), or
 Cloud account (AWS / other KVM-based clouds), or
 Bare-metal box that can boot UEFI images.
 The script itself is agnostic: it just builds signed images and talks to whatever can load them. Proxmox is the default “easy path” to show the idea.
 
 
-## How To:
+**## How To:**
 
 **STEP 1:** Install the Target Hypervisor/HW
   - Install proxmox using local-zfs
@@ -88,7 +88,7 @@ simply type "shl" from thee root terminal for help
 **# Optional**
 The script can also be deployed via EXPORTS and called from cron for "timed" deployments, ie: spin up at 7am, teardown at 4pm .. power off.
 
-Examples:
+**Examples:**
 Deploy to proxmox using the script defaults
 ```bash
 ISO_ORIG=/root/debian-13.1.0-amd64-netinst.iso \
