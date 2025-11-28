@@ -2279,6 +2279,7 @@ fb_banner() {
                                                   /\___/
                                                   \/__/
            secure cluster deploy & control
+
 EOF
 }
 
