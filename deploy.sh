@@ -101,7 +101,7 @@ MASTER_ID="${MASTER_ID:-1000}"
 MASTER_NAME="${MASTER_NAME:-master}"
 
 # MASTER_LAN: master LAN IP (IPv4) on your Proxmox bridge.
-MASTER_LAN="${MASTER_LAN:-10.100.10.224}"
+MASTER_LAN="${MASTER_LAN:-10.100.10.124}"
 
 # NETMASK: LAN netmask.
 #   Example: 255.255.255.0 (for /24)
@@ -119,10 +119,10 @@ NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3 1.1.1.1}"
 # =============================================================================
 
 # NOTE: These IDs/IPs are the "classic" 4-node layout (prom/graf/k8s/storage).
-PROM_ID="${PROM_ID:-1001}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
-GRAF_ID="${GRAF_ID:-1002}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
-K8S_ID="${K8S_ID:-1003}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.221}"
-STOR_ID="${STOR_ID:-1004}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
+PROM_ID="${PROM_ID:-1001}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.123}"
+GRAF_ID="${GRAF_ID:-1002}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.122}"
+K8S_ID="${K8S_ID:-1003}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.121}"
+STOR_ID="${STOR_ID:-1004}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.120}"
 
 # =============================================================================
 # WireGuard hub addresses (planes/fabrics)
@@ -160,14 +160,14 @@ STOR_WG0="${STOR_WG0:-10.77.0.5/32}"; STOR_WG1="${STOR_WG1:-10.78.0.5/32}"; STOR
 # =============================================================================
 
 #   IDs/IPs assume a contiguous /24; adjust to your LAN.
-K8SLB1_ID="${K8SLB1_ID:-1005}"; K8SLB1_NAME="${K8SLB1_NAME:-k8s-lb1}"; K8SLB1_IP="${K8SLB1_IP:-10.100.10.213}"
-K8SLB2_ID="${K8SLB2_ID:-1006}"; K8SLB2_NAME="${K8SLB2_NAME:-k8s-lb2}"; K8SLB2_IP="${K8SLB2_IP:-10.100.10.212}"
-K8SCP1_ID="${K8SCP1_ID:-1007}"; K8SCP1_NAME="${K8SCP1_NAME:-k8s-cp1}"; K8SCP1_IP="${K8SCP1_IP:-10.100.10.219}"
-K8SCP2_ID="${K8SCP2_ID:-1008}"; K8SCP2_NAME="${K8SCP2_NAME:-k8s-cp2}"; K8SCP2_IP="${K8SCP2_IP:-10.100.10.218}"
-K8SCP3_ID="${K8SCP3_ID:-1009}"; K8SCP3_NAME="${K8SCP3_NAME:-k8s-cp3}"; K8SCP3_IP="${K8SCP3_IP:-10.100.10.217}"
-K8SW1_ID="${K8SW1_ID:-1010}"; K8SW1_NAME="${K8SW1_NAME:-k8s-w1}"; K8SW1_IP="${K8SW1_IP:-10.100.10.216}"
-K8SW2_ID="${K8SW2_ID:-1011}"; K8SW2_NAME="${K8SW2_NAME:-k8s-w2}"; K8SW2_IP="${K8SW2_IP:-10.100.10.215}"
-K8SW3_ID="${K8SW3_ID:-1012}"; K8SW3_NAME="${K8SW3_NAME:-k8s-w3}"; K8SW3_IP="${K8SW3_IP:-10.100.10.214}"
+K8SLB1_ID="${K8SLB1_ID:-1005}"; K8SLB1_NAME="${K8SLB1_NAME:-k8s-lb1}"; K8SLB1_IP="${K8SLB1_IP:-10.100.10.113}"
+K8SLB2_ID="${K8SLB2_ID:-1006}"; K8SLB2_NAME="${K8SLB2_NAME:-k8s-lb2}"; K8SLB2_IP="${K8SLB2_IP:-10.100.10.112}"
+K8SCP1_ID="${K8SCP1_ID:-1007}"; K8SCP1_NAME="${K8SCP1_NAME:-k8s-cp1}"; K8SCP1_IP="${K8SCP1_IP:-10.100.10.119}"
+K8SCP2_ID="${K8SCP2_ID:-1008}"; K8SCP2_NAME="${K8SCP2_NAME:-k8s-cp2}"; K8SCP2_IP="${K8SCP2_IP:-10.100.10.118}"
+K8SCP3_ID="${K8SCP3_ID:-1009}"; K8SCP3_NAME="${K8SCP3_NAME:-k8s-cp3}"; K8SCP3_IP="${K8SCP3_IP:-10.100.10.117}"
+K8SW1_ID="${K8SW1_ID:-1010}"; K8SW1_NAME="${K8SW1_NAME:-k8s-w1}"; K8SW1_IP="${K8SW1_IP:-10.100.10.116}"
+K8SW2_ID="${K8SW2_ID:-1011}"; K8SW2_NAME="${K8SW2_NAME:-k8s-w2}"; K8SW2_IP="${K8SW2_IP:-10.100.10.115}"
+K8SW3_ID="${K8SW3_ID:-1012}"; K8SW3_NAME="${K8SW3_NAME:-k8s-w3}"; K8SW3_IP="${K8SW3_IP:-10.100.10.114}"
 
 # =============================================================================
 # Per-node K8s WG /32s – same pattern as minions; mostly “don’t touch” unless
@@ -2115,7 +2115,6 @@ fb_banner() {
            secure cluster deploy & control
 
 EOF
-}
 
 # Only show once per interactive session
 if [ -z "$FBNOBANNER" ]; then
