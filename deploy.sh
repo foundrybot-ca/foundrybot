@@ -835,7 +835,6 @@ EOF
 
   echo wireguard >/etc/modules-load.d/wireguard.conf || true
   modprobe wireguard 2>/dev/null || true
-  pip install dnspython requests cryptography pyOpenSSL
   systemctl enable --now qemu-guest-agent chrony rsyslog ssh || true
 
   cat >/etc/sysctl.d/99-master.conf <<'EOF'
