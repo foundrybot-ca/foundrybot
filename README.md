@@ -1,4 +1,4 @@
-# FoundryBot — ETHOS & WIP Notes
+# FoundryBot
 
 > **Build once, deploy everywhere. Prove first, then pull. Bind private, never public.**  
 > Secure-by-default image and installer repacking for real-world ops — darksite-first, reproducible, and stubbornly simple.
