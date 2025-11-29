@@ -5,7 +5,7 @@
 
 ---
 
-## Why this exists (ethos)
+## Why this exists
 
 FoundryBot is a hobby-turned-power-tool: a build/deploy foundry that makes **full‑custody zero trust** practical on day one.  
 It doesn’t try to replace your tools — it hardens the **substrate** they run on:
@@ -37,9 +37,9 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 | Mirrors drift; restores pick up **new** package versions | Darksite with **frozen, pinned** artifacts; rebuild yields the **exact** point-in-time |
 | VLANs/SGs approximate isolation | Deterministic **WireGuard L3 hub‑and‑spoke**, per‑fabric allowlists |
 | Snapshots/backups with unknown coherency | **Rebuildable** nodes; boot‑env rollback; optional ZFS snapshots/sanoid |
-| Secrets/keys spread early | Tight custody: **only the `todd` key** at bring‑up; explicit admission thereafter |
+| Secrets/keys spread early | Tight custody: **only the `admin` key** at bring‑up; explicit admission thereafter |
 
-**Default access posture:** until you rotate/expand, **only the `todd` key** can reach bootstrap/control surfaces. You can rename/rotate on day‑zero.
+**Default access posture:** until you rotate/expand, **only the `admin` key** can reach bootstrap/control surfaces. You can rename/rotate on day‑zero.
 
 ---
 
@@ -65,17 +65,18 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 - Philosophy: don’t “restore a clone,” just **blow it away and rebuild**; identity and role are asserted on first boot.  
 - Ops pattern: detect failure (e.g., “service failed 3 times”), nuke, and replace from the golden recipe — similar to **Kubernetes** reconciliation.
 
-### `deploy.sh` — *CKA-flavored sample deployer (WIP)*
+### `deploy.sh` — *(WIP)* Applys all states for the "default example" 
 - A staging ground for CKA‑style ops: today it demos simple flows; tomorrow it might be point‑and‑shoot desktops, follow‑the‑sun, or SDN bring‑up.  
 - Execution targets: usable across Anaconda‑based installers (CentOS/Rocky/RHEL and cousins), Debian/Ubuntu autoinstall, and cloud images.
+- Added "shl" a "example" of a ways to use salt to command 3, 300, or 3M targets to effortlessly conducint day to day operations
+- or deploy legions of k8s resources
 
 ---
 
-## Usage sketches (realistic patterns)
+## Usage sketches
 
-- **Cron‑driven fleets:** Upload a golden image at 05:00, run cloning at 05:10, and by 06:30 a **fleet of 100 workstations** appears, each pre‑personalized (per‑user golden image).  
-- **Daily “stateless” desktops:** Users **remote in at 07:00**, do their work, bookmark, commit/backup what matters, and at day’s end the farm is **torn down**.  
-- **Power sanity:** Shut down the damn servers when not in use. Save power, cost, heat — and avoid long‑lived drift.  
+- **Cron‑driven fleets:** Upload a golden image at 05:00, run cloning at 05:10, and by 06:30 a **fleet of 100 workstations** appears, each pre‑personalized (per‑user golden image), toss in your favorite xRDP, presto .. remote fleet!
+- **Power sanity:** Shut down the damn servers when not in use. Save power, cost, heat — and avoid long‑lived drift. :)
 - **Service reliability:** Treat instances as disposable; let health checks trigger **rebuilds** instead of hand‑repair.
 
 ---
@@ -88,51 +89,59 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
   1) revert `/boot` or UEFI entry (boot‑env),  
   2) reboot the fleet, or  
   3) **rebuild the node** and let every hosted VM **recreate itself** from the darksite + postinstall.  
-- Worst case: roll back to the last snapshot (~15 minutes ago) or re‑emit the exact image from last known‑good.
+- Worst case: roll back to the last snapshot (~15 minutes ago) or re‑emit the exact image from last release.
 
-> Note on ZFS: on Linux it isn’t in‑kernel; until native integration, some rough edges are expected. It’s WIP here; the ethos still holds
+> Note on ZFS: on Linux it isn’t in‑kernel; until native integration, some rough edges are expected. It’s WIP here; and Cannonical has had zfs since version 12 its still not "baked-in" but thats another story lol
 
 ---
 
 ## K8s status (WIP)
 
 I’m new to Kubernetes (CKA studies in progress). FoundryBot borrows the *idea* of reconciliation (cattle, not pets) and applies it to **hypervisor‑level deploy/DR**.  
-Goal: “point‑and‑shoot” pods and node bring‑up over private fabrics. **Training starts on the 8th — can’t wait.**
+Goal: “point‑and‑shoot” pods and node bring‑up over private fabrics. **Training starts on the Dec 8th 2025 — can’t wait.**
 
 ---
 
 ## Compatibility & scope
 
-- **Distros/Installers:** Debian/Ubuntu (preseed/autoinstall), RHEL/Rocky/CentOS (Kickstart/Anaconda), plus cloud images.  
+- **Distros/Installers:** Debian/Ubuntu (preseed/autoinstall), RHEL/Rocky/CentOS (Kickstart/Anaconda), plus cloud images.
 - **Targets:** Proxmox templates, VMs, bare metal, cloud AMIs.  
-- **Networks:** Multi‑fabric WireGuard hub‑and‑spoke; deterministic addressing (e.g., `10.78.0.0/16`, hubs at `.1`).  
+- **Networks:** Multi‑fabric WireGuard hub‑and‑spoke; deterministic addressing (e.g., `10.78.0.0/16`, hubs at `.1`).
 - **Identity:** Cloud‑init friendly; uniqueness enforced (machine‑id, SSH host keys, instance‑id).  
-- **Keys:** Start narrow — **`todd` key only** — then rotate/expand intentionally.
-
+- **Keys:** **NOTE: you MUST provide atleast 1 admin public key** user/pw log in is disabled! .. only ADMIN keys are permited, theere is no USER@SSH by default. (feel free to change it if you liek but Im security junky so the ONLY way to access the network internally is from the MASTER) see "shl" command for more along with the a few examples.
+    
 ---
 
-## FAQ (Hobby‑page bluntness)
+## FAQ
 
 **Why Bash?**  
-Because it’s everywhere, predictable, and perfect for atomic WIP. The scripts are **intentionally monolithic** right now to maximize **functional reliability** and reduce moving parts while the design settles. When stable, they’ll be split into modules.  
+becasue it has 0 dep's and works with every known linux kernel. Enfact the ENTRE deployment script uses 27 packages and a single bash script. Bash is the right tool for the job.  ie: there is no python in eairly boot when no OS is even installed.. but bash is :)
 
-**Isn’t Bash “messy”?**  
-Yes — by design. The priority is a repeatable, **gap‑free rebuild path** for failed nodes. Clean architecture follows once edge cases are ironed out.
+**The script is a messy”**  
+Yes — I know, but its WIP and atomic, and I hate rummaging through files, hah!
 
 **Is this a backup solution?**  
 No. It’s a **reproducible build + darksite** approach. You don’t restore mystery tarballs; you **recreate** exact systems using pinned artifacts.
 
 **How does this reduce MTTR?**  
-Snapshots (where used), pinned content, and scripted rebuilds mean you can roll back **minutes** or completely **re‑emit** systems with zero drift.
+Its a noon-nonsence time capsule.. its not possible to, loose a back up, or have something fail and need to be repaired.. and with linux becasue you RELY on 3rd party repos. You backup process "ASSUMES" that a repo you used way back when. still exists.  All of that can fail, and even when it doesnt fail you can potentially end up like the AWS outage where you fix one thing and break someething else.. that not possible now, you either rever to the last snapshot/bookmark.. or you build from scratch.. hence the power of snapshots/replication and clones with zfs. Its stupid powerful!
 
 **Do I have to change my toolchain?**  
-No. Keep Ansible/Terraform/Packer/CI. FoundryBot **hardens** images and networking so your existing playbooks run on a safer substrate.
+Nope, not at all!!. Enfact it's super easy and works with ANY CIDC pipeline!!.  With a couple of steps.
 
-**Can I use this with RHEL/Rocky/CentOS?**  
-Yes. Anything still on **Anaconda/Kickstart** is fair game. Download the ISO you like (CentOS, Rocky, RHEL, AWS cousins) and wire it in.
+#1 .. take the "output" / "artifacts/packages" of your existing pipeline and add it to the "darksite directory"
+#2 .. modify the postinstall.sh
+      - sign and add your darksite repo
+      - modify the existing apt install to include what ever you like
+
+once it works as expected, simply use it as the source for Terraform and it will treat it exactly the same as any other image.. The differance is this one has built in kernel support for wireguard and allows to you create as many netowrk fabrics as you like .. And you dont have to change a thing..
+
+granted: as I said before, this is a VERY powerful, "tool" .. but at the same time, not a "magical" bullet, what it does REALLY WELL is .. OFFER ALTERNITIVES and differant ways of doing things.. ie: host your own vault, send your tokens via the L3 tunnel, not hashicorps cloud server. You literally ahve 100% control, and the option to do it with 0 USERLAND/NETWORK.
+      
 
 **Is ZFS required?**  
 No. It’s a WIP enhancement. The rebuild‑over‑restore ethos stands with or without ZFS.
+
 
 ---
 
