@@ -7,7 +7,7 @@
 
 ## Why this exists
 
-FoundryBot is a hobby‑turned‑power‑tool: a build/deploy foundry that makes **full‑custody zero trust** practical on day one.  
+FoundryBot is a build/deploy tool-kit that makes **full‑custody zero trust** practical for anyone. 
 It doesn’t try to replace your tools — it hardens the **substrate** they run on:
 
 - Private, encrypted **L3 hub‑and‑spoke** networks (WireGuard) come up before anything public.
