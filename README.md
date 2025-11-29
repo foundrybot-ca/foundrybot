@@ -22,7 +22,8 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 ## What it does well
 
 - **Works in any current environment.** Air‑gapped labs, clouds, colo, remote ISPs — if you can host a private UDP port and a content share, you’re in.  
-- **Rebuild, don’t restore.** Disaster recovery is **deterministic**: rebuild the node and stream pinned userland; no drift from “latest.”  
+- **Works well** with ZFS for seamless snapshots, rollbacks, and clones—adding ZFS-grade durability, resilience, and security.
+- **Rebuild/Clone, don’t restore.** Disaster recovery is **deterministic**: rebuild the node and stream pinned userland; no drift from “latest.”  
 - **Private first‑boot.** Nodes join encrypted fabrics (`wg*`) and bind services to those IPs; public listeners stay closed.  
 - **Same tools, safer path.** Keep Ansible/Terraform/Packer/CI; FoundryBot repacks images and supplies identity & networks.  
 - **Fleet ergonomics.** Target “clusters” (e.g., K8s workers vs. managers), rotate WireGuard peers at scale, and re‑materialize images on demand.
@@ -46,9 +47,9 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 ## File descriptions (WIP but functional)
 
 ### `apply.py` — *Network Fabrics Applier (WIP)*
-- **Purpose:** apply **network fabrics** and minimal role packages.  
-- **Scope:** focuses on fabric definition & binding; package install strictly “as per role.”  
-- **Status:** work‑in‑progress; expect rapid iteration as K8s and identity workflows settle.
+- **Currently** the *./deploy.sh* process is broken in two, ie: I didnt "bake in" things to ensure that it can intergrate into an existing wg fabric.
+- **This Version** brings the *"cluster"* that is deployed using the *deploy* tool, it applys all of the salt states and builds the backend wireguard fabirc
+- **NOTE** the script by defualt is designed to intergrate with existing stuff.. henc it uses the public netowrk to to inital connectioons.. the *APPLY* script is ment to build the rest fo the world, and when complete.. then .. move over to the wireguard netwwork. Ie: its not going to break anything to try.
 
 ### `build.sh` — *World Builder (darksite + payload)*
 - Pulls **every single file** required to (re)build the world — *from your repo manifests and artifact lists*.  
@@ -56,7 +57,7 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 - DR angle: if a hypervisor dies 8 months from now, you rebuild it and **replay the exact build** with the **exact files** from 8 months ago.  
   - No “restore to latest” surprises.  
   - No chasing stale mirrors.  
-  - It’s not a backup; it’s a **time capsule** you can boot.
+  - It’s not a backup; it’s a **time capsule** that runs the *"postinstall.sh"* on first boot.
 
 ### `clonebot.sh` — *Proxmox Clone Orchestrator (cloud‑init aware)*
 - Completely automates Proxmox clone creation — no more click‑next‑next‑yes.  
@@ -65,7 +66,7 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 - Philosophy: don’t “restore a clone,” just **blow it away and rebuild**; identity and role are asserted on first boot.  
 - Ops pattern: detect failure (e.g., “service failed 3 times”), nuke, and replace from the golden recipe — similar to **Kubernetes** reconciliation.
 
-### `deploy.sh` — *(WIP)* applies all states for the “default example”
+### `deploy.sh` — *(WIP)* This autmates the entire install process of any number of pre-defined VM's microvm's or container workloads” currently its deploying a kubernetes cluster.
 - A staging ground for CKA‑style ops: today it demos simple flows; tomorrow it might be point‑and‑shoot desktops, follow‑the‑sun, or SDN bring‑up.  
 - Execution targets: usable across Anaconda‑based installers (CentOS/Rocky/RHEL and cousins), Debian/Ubuntu autoinstall, and cloud images.  
 - Adds **`shl`**, an example of using Salt to command 3, 300, or 3M targets for effortless day‑to‑day operations — or to deploy legions of K8s resources.
