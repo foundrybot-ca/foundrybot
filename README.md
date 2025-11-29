@@ -177,7 +177,7 @@ Bash + standard tools (`curl`, `xorriso`, `qemu-img`, etc.).
 A Debian ISO (Trixie / 13.x works out of the box).  
 Your SSH key (`~/.ssh/id_ed25519.pub`) for the admin user.
 
-> **This script targets a REMOTE TARGET HOST.** dont run it on proxmox direclty simply ssh-copy-id the root key to proxmox
+> **This script targets a REMOTE TARGET HOST.** simply ssh-copy-id root to the TARGET
 
 **Install packages on the build server**
 ```bash
