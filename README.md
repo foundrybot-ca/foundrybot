@@ -34,7 +34,7 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 
 | Legacy “push to public IP” | FoundryBot “pull on private fabric” |
 |---|---|
-| Stock image, bootstrap over Internet; public SSH/agents | Sill uses SSH, but optional Darksite, or Push, ideally it will be baked into a deploy "server" not a script|
+| Stock image, bootstrap over Internet; public SSH/agents | Sill uses SSH, but optional Darksite, or Push, ideally id bake it into a "deploy" appliance and use fastapi or somthing similar.
 | Mirrors drift; restores pick up **new** package versions | Darksite with **frozen, pinned** artifacts; rebuild yields the **exact** point‑in‑time |
 | VLANs/SGs approximate isolation | Deterministic **WireGuard L3 hub‑and‑spoke**, per‑fabric allowlists |
 | Snapshots/backups with unknown coherency | **Rebuildable** nodes; boot‑env rollback; optional ZFS snapshots/sanoid |
