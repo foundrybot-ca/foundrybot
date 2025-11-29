@@ -115,7 +115,7 @@ Goal: “point‑and‑shoot” pods and node bring‑up over private fabrics. *
 ## FAQ
 
 **Why Bash?**  
-Because it has zero dependencies and works with every modern Linux. In fact, the **entire** deployment uses a small set of standard packages and a single Bash entrypoint. Bash is the right tool for early‑boot — there’s no Python when no OS is installed, but Bash is there. 🙂
+Because it has zero dependencies and works with every modern Linux kernel where no OS exists yet. In fact, the **entire** deployment tool only uses a few packages to build the entire world.
 
 **“The script is messy.”**  
 Guilty — it’s **WIP and atomic**. The goal is functional reliability first, with minimal moving parts. Once the design settles, it will be split into clean modules.
