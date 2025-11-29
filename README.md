@@ -30,7 +30,7 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 
 ---
 
-## Legacy vs. FoundryBot (concrete deltas)
+## Legacy vs. FoundryBot
 
 | Legacy “push to public IP” | FoundryBot “pull on private fabric” |
 |---|---|
@@ -141,7 +141,7 @@ No. It’s a WIP enhancement. The rebuild‑over‑restore ethos stands with or 
 
 ---
 
-## Quick start (mental model)
+## Quick start
 
 1. Put artifacts into `darksite/` (≈ 2 TB).  
 2. Define fabrics: `wg0=bootstrap`, `wg1=control (10.78.0.0/16)`, `wg2=data`, `wg3=storage`.  
@@ -164,15 +164,6 @@ No. It’s a WIP enhancement. The rebuild‑over‑restore ethos stands with or 
 
 - UNIX‑side cousin: **OccamBSD** — <https://github.com/michaeldexter/occambsd>  
 - CKA journey credit: Alta3 training — starting on the 8th.
-
----
-
-## In short
-
-- **Prove first, then pull** (private fabrics before public anything).  
-- **Rebuild, don’t restore** (darksite + pinned artifacts).  
-- **Make the secure path the easy path** (bind to `wg*`, close the rest).  
-- **It’s a hobby — and it’s stupid powerful.** Anyone can use it, anywhere, with the tools they already love.
 
 ---
 
