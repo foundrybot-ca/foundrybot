@@ -46,7 +46,7 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 
 ## File descriptions (WIP but functional)
 
-### `apply.py` — *Network Fabrics Applier (WIP)*
+### `apply.py` — *Applies States and Enables the backplanes*
 - **Currently** the *./deploy.sh* process is broken in two, ie: I didnt "bake in" things to ensure that it can intergrate into an existing wg fabric.
 - **This Version** brings the *"cluster"* that is deployed using the *deploy* tool, it applys all of the salt states and builds the backend wireguard fabirc
 - **NOTE** the script by defualt is designed to intergrate with existing stuff.. henc it uses the public netowrk to to inital connectioons.. the *APPLY* script is ment to build the rest fo the world, and when complete.. then .. move over to the wireguard netwwork. Ie: its not going to break anything to try.
