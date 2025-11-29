@@ -34,7 +34,7 @@ It’s “Kubernetes‑like” in spirit — cattle, not pets — but pointed at
 
 | Legacy “push to public IP” | FoundryBot “pull on private fabric” |
 |---|---|
-| Stock image, bootstrap over Internet; public SSH/agents | atm: also uses SSH for inital induction of the salt-minion, I have not fully automated is that would make it more difficult to use with an existing sdn mesh if you want to go that route to. ideally this script should be a "proper" build server with api etc. (if you want one let me know, I'm avialible for work) 
+| Stock image, bootstrap over Internet; public SSH/agents | atm: Also uses SSH for inital induction of the salt-minion, I have not fully automated is that would make it more difficult to use with an existing sdn mesh if you want to go that route to. ideally this script should be a "proper" build server with api etc. (if you want one let me know, I'm avialible for work) 
 | Mirrors drift; restores pick up **new** package versions | Darksite with **frozen, pinned** artifacts; rebuild yields the **exact** point‑in‑time |
 | VLANs/SGs approximate isolation | Deterministic **WireGuard L3 hub‑and‑spoke**, per‑fabric allowlists |
 | Snapshots/backups with unknown coherency | **Rebuildable** nodes; boot‑env rollback; optional ZFS snapshots/sanoid |
