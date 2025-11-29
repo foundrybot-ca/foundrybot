@@ -171,13 +171,13 @@ No. It’s a WIP enhancement. The rebuild‑over‑restore ethos stands with or 
 
 # Requirements
 
-**1) A build machine where `./deploy.sh` will be executed**  
+**1) A build machine where `./deploy.sh` will be executed FROM**  
 Any modern Linux box (laptop, workstation, or another VM).  
 Bash + standard tools (`curl`, `xorriso`, `qemu-img`, etc.).  
 A Debian ISO (Trixie / 13.x works out of the box).  
 Your SSH key (`~/.ssh/id_ed25519.pub`) for the admin user.
 
-> **This script targets a remote host.** Images are built and stored on the build server.
+> **This script targets a REMOTE TARGET HOST.** dont run it on proxmox direclty simply ssh-copy-id the root key to proxmox
 
 **Install packages on the build server**
 ```bash
