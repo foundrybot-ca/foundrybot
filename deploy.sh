@@ -2,8 +2,39 @@
 set -euo pipefail
 
 # =============================================================================
+# Logging / error helpers
+# =============================================================================
+
+log()  { echo "[INFO]  $(date '+%F %T') - $*"; }
+warn() { echo "[WARN]  $(date '+%F %T') - $*" >&2; }
+err()  { echo "[ERROR] $(date '+%F %T') - $*" >&2; }
+die()  { err "$*"; exit 1; }
+
+require_cmd() {
+  local cmd="$1"
+  command -v "$cmd" >/dev/null 2>&1 || die "Required command not found in PATH: $cmd"
+}
+
+# =============================================================================
+# SSH helpers (build host → Proxmox / remote)
+# =============================================================================
+
+SSH_OPTS="-q \
+  -o LogLevel=ERROR \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  -o GlobalKnownHostsFile=/dev/null \
+  -o CheckHostIP=no \
+  -o ConnectTimeout=6 \
+  -o BatchMode=yes"
+
+sssh() { ssh $SSH_OPTS "$@"; }
+sscp() { scp -q $SSH_OPTS "$@"; }
+
+# =============================================================================
 # Preseed / installer behaviour
 # =============================================================================
+# These shape how the Debian installer runs inside the VM.
 
 # PRESEED_LOCALE: system locale (POSIX-style).
 #   Common: en_US.UTF-8, en_GB.UTF-8, fr_CA.UTF-8, de_DE.UTF-8
@@ -26,8 +57,7 @@ PRESEED_MIRROR_COUNTRY="${PRESEED_MIRROR_COUNTRY:-manual}"
 #   Examples: deb.debian.org, ftp.ca.debian.org, mirror.local.lan
 PRESEED_MIRROR_HOST="${PRESEED_MIRROR_HOST:-deb.debian.org}"
 
-# PRESEED_MIRROR_DIR: Debian mirror directory path.
-#   Typically /debian
+# PRESEED_MIRROR_DIR: Debian mirror directory path (typically /debian).
 PRESEED_MIRROR_DIR="${PRESEED_MIRROR_DIR:-/debian}"
 
 # PRESEED_HTTP_PROXY: HTTP proxy for installer.
@@ -47,11 +77,11 @@ PRESEED_BOOTDEV="${PRESEED_BOOTDEV:-/dev/sda}"
 PRESEED_EXTRA_PKGS="${PRESEED_EXTRA_PKGS:-openssh-server}"
 
 # =============================================================================
-# High-level deployment mode
+# High-level deployment mode / target
 # =============================================================================
 
 # TARGET: what this script should do.
-#   Typical values (depends on which functions you wired in):
+#   Typical values (depends on which functions you wire in):
 #     proxmox-all        - full Proxmox flow (build ISO + master + minions)
 #     proxmox-cluster    - build & deploy master + core minions
 #     proxmox-k8s-ha     - build HA K8s layout on Proxmox
@@ -63,22 +93,26 @@ PRESEED_EXTRA_PKGS="${PRESEED_EXTRA_PKGS:-openssh-server}"
 #     firecracker-bundle - emit Firecracker rootfs/kernel/initrd + helpers
 #     firecracker        - run Firecracker microVMs
 #     packer-scaffold    - emit Packer QEMU template
-
 TARGET="${TARGET:-proxmox-all}"
+
+# DOMAIN: base DNS domain for all VMs.
 DOMAIN="${DOMAIN:-unixbox.net}"
+
+# INPUT: logical Proxmox target selector (maps to PROXMOX_HOST).
 INPUT="${INPUT:-1}"
 
 case "$INPUT" in
   1|fiend)  PROXMOX_HOST="${PROXMOX_HOST:-10.100.10.225}" ;;
   2|dragon) PROXMOX_HOST="${PROXMOX_HOST:-10.100.10.226}" ;;
   3|lion)   PROXMOX_HOST="${PROXMOX_HOST:-10.100.10.227}" ;;
-  *) echo "[ERROR] Unknown INPUT=$INPUT" >&2; exit 1 ;;
+  *)        die "Unknown INPUT=$INPUT (expected 1|fiend, 2|dragon, 3|lion)" ;;
 esac
 
 # =============================================================================
-# ISO_ORIG: source Debian ISO used to build custom images.
+# ISO source / Proxmox storage IDs
 # =============================================================================
 
+# ISO_ORIG: source Debian ISO used to build custom images.
 #   Typical: netinst or DVD ISO path on the build host.
 ISO_ORIG="${ISO_ORIG:-/root/debian-13.1.0-amd64-netinst.iso}"
 
@@ -91,7 +125,7 @@ ISO_STORAGE="${ISO_STORAGE:-local}"
 VM_STORAGE="${VM_STORAGE:-local-zfs}"
 
 # =============================================================================
-#  Master hub VM (control plane / hub)
+# Master hub VM (control plane / hub)
 # =============================================================================
 
 # MASTER_ID: Proxmox VMID for master node.
@@ -103,8 +137,7 @@ MASTER_NAME="${MASTER_NAME:-master}"
 # MASTER_LAN: master LAN IP (IPv4) on your Proxmox bridge.
 MASTER_LAN="${MASTER_LAN:-10.100.10.224}"
 
-# NETMASK: LAN netmask.
-#   Example: 255.255.255.0 (for /24)
+# NETMASK: LAN netmask (e.g. 255.255.255.0 for /24).
 NETMASK="${NETMASK:-255.255.255.0}"
 
 # GATEWAY: default gateway on LAN for master/minions.
@@ -115,41 +148,40 @@ GATEWAY="${GATEWAY:-10.100.10.1}"
 NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3 1.1.1.1}"
 
 # =============================================================================
-# Core minion VMs
+# Core minion VMs (classic 4-node layout)
 # =============================================================================
+# prom / graf / k8s / storage – these are the "core" non-K8s nodes.
 
-# NOTE: These IDs/IPs are the "classic" 4-node layout (prom/graf/k8s/storage).
 PROM_ID="${PROM_ID:-2001}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
 GRAF_ID="${GRAF_ID:-2002}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
 K8S_ID="${K8S_ID:-2003}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.221}"
 STOR_ID="${STOR_ID:-2004}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
 
 # =============================================================================
-# WireGuard hub addresses (planes/fabrics)
+# WireGuard hub addresses (planes / fabrics)
 # =============================================================================
+# WG0–WG3 live on the master; minions/K8s nodes get /32s carved out of them.
+#
+# Suggested mapping:
+#   wg0 = bootstrap / access
+#   wg1 = control / telemetry
+#   wg2 = data (K8s, app traffic)
+#   wg3 = storage / backup
 
-# WG0_IP..WG3_IP: master WireGuard addresses and masks for each fabric.
-#   Suggested mapping:
-#     wg0 = bootstrap / access
-#     wg1 = control / telemetry
-#     wg2 = data (K8s, app traffic)
-#     wg3 = storage / backup
 WG0_IP="${WG0_IP:-10.77.0.1/16}"; WG0_PORT="${WG0_PORT:-51820}"
 WG1_IP="${WG1_IP:-10.78.0.1/16}"; WG1_PORT="${WG1_PORT:-51821}"
 WG2_IP="${WG2_IP:-10.79.0.1/16}"; WG2_PORT="${WG2_PORT:-51822}"
 WG3_IP="${WG3_IP:-10.80.0.1/16}"; WG3_PORT="${WG3_PORT:-51823}"
 
 # WG_ALLOWED_CIDR: comma-separated CIDRs allowed via WireGuard.
-#   Default covers all four 10.77-10.80 /16 networks.
+#   Default covers all four 10.77–10.80 /16 networks.
 WG_ALLOWED_CIDR="${WG_ALLOWED_CIDR:-10.77.0.0/16,10.78.0.0/16,10.79.0.0/16,10.80.0.0/16}"
 
 # =============================================================================
-# Per-minion WireGuard addresses
+# Per-minion WireGuard /32s (PROM / GRAF / K8S / STOR)
 # =============================================================================
 
-# PROM_WG*, GRAF_WG*, K8S_WG*, STOR_WG*:
-#   Static /32s for each role on each fabric.
-#   Change only if you want a different addressing scheme.
+# Static /32s per role per fabric. Change only if you want a different scheme.
 PROM_WG0="${PROM_WG0:-10.77.0.2/32}"; PROM_WG1="${PROM_WG1:-10.78.0.2/32}"; PROM_WG2="${PROM_WG2:-10.79.0.2/32}"; PROM_WG3="${PROM_WG3:-10.80.0.2/32}"
 GRAF_WG0="${GRAF_WG0:-10.77.0.3/32}"; GRAF_WG1="${GRAF_WG1:-10.78.0.3/32}"; GRAF_WG2="${GRAF_WG2:-10.79.0.3/32}"; GRAF_WG3="${GRAF_WG3:-10.80.0.3/32}"
 K8S_WG0="${K8S_WG0:-10.77.0.4/32}";  K8S_WG1="${K8S_WG1:-10.78.0.4/32}";  K8S_WG2="${K8S_WG2:-10.79.0.4/32}";  K8S_WG3="${K8S_WG3:-10.80.0.4/32}"
@@ -158,27 +190,31 @@ STOR_WG0="${STOR_WG0:-10.77.0.5/32}"; STOR_WG1="${STOR_WG1:-10.78.0.5/32}"; STOR
 # =============================================================================
 # Extended K8s HA layout VMs
 # =============================================================================
+# IDs/IPs assume a contiguous /24; adjust to match your LAN.
 
-#   IDs/IPs assume a contiguous /24; adjust to your LAN.
 K8SLB1_ID="${K8SLB1_ID:-2005}"; K8SLB1_NAME="${K8SLB1_NAME:-k8s-lb1}"; K8SLB1_IP="${K8SLB1_IP:-10.100.10.213}"
 K8SLB2_ID="${K8SLB2_ID:-2006}"; K8SLB2_NAME="${K8SLB2_NAME:-k8s-lb2}"; K8SLB2_IP="${K8SLB2_IP:-10.100.10.212}"
+
 K8SCP1_ID="${K8SCP1_ID:-2007}"; K8SCP1_NAME="${K8SCP1_NAME:-k8s-cp1}"; K8SCP1_IP="${K8SCP1_IP:-10.100.10.219}"
 K8SCP2_ID="${K8SCP2_ID:-2008}"; K8SCP2_NAME="${K8SCP2_NAME:-k8s-cp2}"; K8SCP2_IP="${K8SCP2_IP:-10.100.10.218}"
 K8SCP3_ID="${K8SCP3_ID:-2009}"; K8SCP3_NAME="${K8SCP3_NAME:-k8s-cp3}"; K8SCP3_IP="${K8SCP3_IP:-10.100.10.217}"
+
 K8SW1_ID="${K8SW1_ID:-2010}"; K8SW1_NAME="${K8SW1_NAME:-k8s-w1}"; K8SW1_IP="${K8SW1_IP:-10.100.10.216}"
 K8SW2_ID="${K8SW2_ID:-2011}"; K8SW2_NAME="${K8SW2_NAME:-k8s-w2}"; K8SW2_IP="${K8SW2_IP:-10.100.10.215}"
 K8SW3_ID="${K8SW3_ID:-2012}"; K8SW3_NAME="${K8SW3_NAME:-k8s-w3}"; K8SW3_IP="${K8SW3_IP:-10.100.10.214}"
 
 # =============================================================================
-# Per-node K8s WG /32s – same pattern as minions; mostly “don’t touch” unless
+# Per-node K8s WG /32s (extended layout)
 # =============================================================================
+# Mostly "don't touch" unless you want a different addressing plan.
 
-# you want a different addressing plan.
 K8SLB1_WG0="${K8SLB1_WG0:-10.77.0.101/32}"; K8SLB1_WG1="${K8SLB1_WG1:-10.78.0.101/32}"; K8SLB1_WG2="${K8SLB1_WG2:-10.79.0.101/32}"; K8SLB1_WG3="${K8SLB1_WG3:-10.80.0.101/32}"
 K8SLB2_WG0="${K8SLB2_WG0:-10.77.0.102/32}"; K8SLB2_WG1="${K8SLB2_WG1:-10.78.0.102/32}"; K8SLB2_WG2="${K8SLB2_WG2:-10.79.0.102/32}"; K8SLB2_WG3="${K8SLB2_WG3:-10.80.0.102/32}"
+
 K8SCP1_WG0="${K8SCP1_WG0:-10.77.0.110/32}"; K8SCP1_WG1="${K8SCP1_WG1:-10.78.0.110/32}"; K8SCP1_WG2="${K8SCP1_WG2:-10.79.0.110/32}"; K8SCP1_WG3="${K8SCP1_WG3:-10.80.0.110/32}"
 K8SCP2_WG0="${K8SCP2_WG0:-10.77.0.111/32}"; K8SCP2_WG1="${K8SCP2_WG1:-10.78.0.111/32}"; K8SCP2_WG2="${K8SCP2_WG2:-10.79.0.111/32}"; K8SCP2_WG3="${K8SCP2_WG3:-10.80.0.111/32}"
 K8SCP3_WG0="${K8SCP3_WG0:-10.77.0.112/32}"; K8SCP3_WG1="${K8SCP3_WG1:-10.78.0.112/32}"; K8SCP3_WG2="${K8SCP3_WG2:-10.79.0.112/32}"; K8SCP3_WG3="${K8SCP3_WG3:-10.80.0.112/32}"
+
 K8SW1_WG0="${K8SW1_WG0:-10.77.0.120/32}"; K8SW1_WG1="${K8SW1_WG1:-10.78.0.120/32}"; K8SW1_WG2="${K8SW1_WG2:-10.79.0.120/32}"; K8SW1_WG3="${K8SW1_WG3:-10.80.0.120/32}"
 K8SW2_WG0="${K8SW2_WG0:-10.77.0.121/32}"; K8SW2_WG1="${K8SW2_WG1:-10.78.0.121/32}"; K8SW2_WG2="${K8SW2_WG2:-10.79.0.121/32}"; K8SW2_WG3="${K8SW2_WG3:-10.80.0.121/32}"
 K8SW3_WG0="${K8SW3_WG0:-10.77.0.122/32}"; K8SW3_WG1="${K8SW3_WG1:-10.78.0.122/32}"; K8SW3_WG2="${K8SW3_WG2:-10.79.0.122/32}"; K8SW3_WG3="${K8SW3_WG3:-10.80.0.122/32}"
@@ -186,12 +222,14 @@ K8SW3_WG0="${K8SW3_WG0:-10.77.0.122/32}"; K8SW3_WG1="${K8SW3_WG1:-10.78.0.122/32
 # =============================================================================
 # VM sizing (resources per role)
 # =============================================================================
-
 # Memory in MB, cores as vCPUs, disk in GB.
+
 MASTER_MEM="${MASTER_MEM:-4096}"; MASTER_CORES="${MASTER_CORES:-4}";  MASTER_DISK_GB="${MASTER_DISK_GB:-40}"
 MINION_MEM="${MINION_MEM:-4096}"; MINION_CORES="${MINION_CORES:-4}"; MINION_DISK_GB="${MINION_DISK_GB:-32}"
+
 K8S_MEM="${K8S_MEM:-8192}"
 STOR_DISK_GB="${STOR_DISK_GB:-64}"
+
 K8S_LB_MEM="${K8S_LB_MEM:-2048}"; K8S_LB_CORES="${K8S_LB_CORES:-2}";  K8S_LB_DISK_GB="${K8S_LB_DISK_GB:-16}"
 K8S_CP_MEM="${K8S_CP_MEM:-8192}"; K8S_CP_CORES="${K8S_CP_CORES:-4}";  K8S_CP_DISK_GB="${K8S_CP_DISK_GB:-50}"
 K8S_WK_MEM="${K8S_WK_MEM:-8192}"; K8S_WK_CORES="${K8S_WK_CORES:-4}";  K8S_WK_DISK_GB="${K8S_WK_DISK_GB:-60}"
@@ -204,11 +242,11 @@ K8S_WK_MEM="${K8S_WK_MEM:-8192}"; K8S_WK_CORES="${K8S_WK_CORES:-4}";  K8S_WK_DIS
 ADMIN_USER="${ADMIN_USER:-todd}"
 
 # ADMIN_PUBKEY_FILE: path to an SSH public key file.
-#   If set, content overrides SSH_PUBKEY.
+#   If set and readable, content overrides SSH_PUBKEY.
 ADMIN_PUBKEY_FILE="${ADMIN_PUBKEY_FILE:-}"
 
 # SSH_PUBKEY: SSH public key string to authorize for ADMIN_USER.
-SSH_PUBKEY="${SSH_PUBKEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtSJvzO1pXzWIQlZZenou4Bj4YwYFOlH6w4Dl4AHgcj todd@onyx}"
+SSH_PUBKEY="${SSH_PUBKEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINgqdaF+C41xwLS41+dOTnpsrDTPkAwo4Zejn4tb0lOt todd@onyx.unixbox.net}"
 
 # ALLOW_ADMIN_PASSWORD: whether password SSH auth is enabled for ADMIN_USER.
 #   yes = enable password login (LAN-scoped by your firewall rules)
@@ -217,13 +255,12 @@ SSH_PUBKEY="${SSH_PUBKEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtSJvzO1pXzWIQlZZ
 ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-${ALLOW_TODD_PASSWORD:-no}}"
 
 # GUI_PROFILE: what kind of GUI to install (if any).
-#   server     = no full desktop; server-friendly bits only
-#   gnome      = full GNOME desktop
-#   minimal    = minimal X/wayland stack (implementation-specific)
+#   server  = no full desktop; server-friendly bits only
+#   gnome   = full GNOME desktop
+#   minimal = minimal X/Wayland stack (implementation-specific)
 GUI_PROFILE="${GUI_PROFILE:-server}"
 
-# INSTALL_ANSIBLE: whether to install Ansible on master.
-#   yes | no
+# INSTALL_ANSIBLE: whether to install Ansible on master (yes|no).
 INSTALL_ANSIBLE="${INSTALL_ANSIBLE:-yes}"
 
 # INSTALL_SEMAPHORE: whether to install Semaphore (Ansible UI) on master.
@@ -231,6 +268,9 @@ INSTALL_ANSIBLE="${INSTALL_ANSIBLE:-yes}"
 #   try - attempt install; ignore failures
 #   no  - skip
 INSTALL_SEMAPHORE="${INSTALL_SEMAPHORE:-no}"
+
+TMUX_CONF="${TMUX_CONF:-/etc/skel/.tmux.conf}"
+
 
 # =============================================================================
 # Build artifacts / disk image paths
@@ -240,7 +280,7 @@ INSTALL_SEMAPHORE="${INSTALL_SEMAPHORE:-no}"
 BUILD_ROOT="${BUILD_ROOT:-/root/builds}"
 mkdir -p "$BUILD_ROOT"
 
-# BASE_DISK_IMAGE: generic path for the exported “golden” VM disk (qcow2 or raw).
+# BASE_DISK_IMAGE: exported “golden” VM disk (qcow2 or raw).
 #   Used as input for vmdk-export, aws-ami, etc.
 BASE_DISK_IMAGE="${BASE_DISK_IMAGE:-$BUILD_ROOT/base-root.qcow2}"
 
@@ -266,15 +306,13 @@ AWS_S3_BUCKET="${AWS_S3_BUCKET:-foundrybot-images}"
 # AWS_IMPORT_ROLE: IAM role for VM import (typically 'vmimport').
 AWS_IMPORT_ROLE="${AWS_IMPORT_ROLE:-vmimport}"
 
-# AWS_ARCH: AMI architecture.
-#   x86_64 | arm64
+# AWS_ARCH: AMI architecture (x86_64 | arm64).
 AWS_ARCH="${AWS_ARCH:-x86_64}"
 
 # AWS_INSTANCE_TYPE: EC2 instance type for builds / runs.
 AWS_INSTANCE_TYPE="${AWS_INSTANCE_TYPE:-t3.micro}"
 
-# AWS_ASSOC_PUBLIC_IP: whether to associate public IP on run.
-#   true | false
+# AWS_ASSOC_PUBLIC_IP: whether to associate public IP on run (true|false).
 AWS_ASSOC_PUBLIC_IP="${AWS_ASSOC_PUBLIC_IP:-true}"
 
 # AWS_KEY_NAME: Name of EC2 KeyPair to inject.
@@ -334,12 +372,12 @@ PACKER_TEMPLATE="${PACKER_TEMPLATE:-$PACKER_OUT_DIR/foundrybot-qemu.json}"
 # =============================================================================
 # ESXi / VMDK export
 # =============================================================================
-# VMDK_OUTPUT: target VMDK path when exporting BASE_DISK_IMAGE.
 
+# VMDK_OUTPUT: target VMDK path when exporting BASE_DISK_IMAGE.
 VMDK_OUTPUT="${VMDK_OUTPUT:-$BASE_VMDK_IMAGE}"
 
 # =============================================================================
-# Enrollment SSH keypair
+# Enrollment SSH keypair (for WireGuard / cluster enrollment)
 # =============================================================================
 
 # ENROLL_KEY_NAME: filename stem for enroll SSH keypair.
@@ -361,6 +399,13 @@ ensure_enroll_keypair() {
     log "Using existing cluster enrollment keypair in $ENROLL_KEY_DIR"
   fi
 }
+
+# =============================================================================
+# Tool sanity checks
+# =============================================================================
+
+require_cmd xorriso || true
+command -v xorriso >/dev/null || { err "xorriso not installed (needed for ISO build)"; }
 
 SSH_OPTS="-q -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o CheckHostIP=no -o ConnectTimeout=6 -o BatchMode=yes"
 sssh(){ ssh $SSH_OPTS "$@"; }
@@ -529,6 +574,30 @@ boot_from_disk() {
   local vmid="$1"
   pmx "qm set $vmid --delete ide2; qm set $vmid --boot order=scsi0; qm start $vmid"
   pmx_wait_for_state "$vmid" "running" 600
+}
+
+seed_tmux_conf() {
+  : "${ADMIN_USER:=todd}"
+  : "${TMUX_CONF:=/etc/skel/.tmux.conf}"
+
+  log "Writing tmux config to ${TMUX_CONF}"
+  install -d -m0755 "$(dirname "$TMUX_CONF")"
+
+  cat >"$TMUX_CONF" <<'EOF'
+set -g mouse on
+set -g history-limit 100000
+setw -g mode-keys vi
+bind -n C-Space copy-mode
+EOF
+
+  # Copy to root and admin user if they exist
+  if id root >/dev/null 2>&1; then
+    cp -f "$TMUX_CONF" /root/.tmux.conf
+  fi
+  if id "$ADMIN_USER" >/dev/null 2>&1; then
+    cp -f "$TMUX_CONF" "/home/${ADMIN_USER}/.tmux.conf"
+    chown "${ADMIN_USER}:${ADMIN_USER}" "/home/${ADMIN_USER}/.tmux.conf"
+  fi
 }
 
 # =============================================================================
@@ -780,7 +849,6 @@ set -euo pipefail
 
 LOG="/var/log/postinstall-master.log"
 exec > >(tee -a "$LOG") 2>&1
-exec 2>&1
 trap 'echo "[X] Failed at line $LINENO" >&2' ERR
 log(){ echo "[INFO] $(date '+%F %T') - $*"; }
 
@@ -830,12 +898,19 @@ EOF
     sudo openssh-server curl wget ca-certificates gnupg jq xxd unzip tar \
     iproute2 iputils-ping net-tools \
     nftables wireguard-tools \
-    python3-venv libbpfcc llvm libclang-cpp* python3-bpfcc python3-psutil \
+    python3-venv python3-pip python3-bpfcc python3-psutil \
+    libbpfcc llvm libclang-cpp* \
     chrony rsyslog qemu-guest-agent vim || true
 
   echo wireguard >/etc/modules-load.d/wireguard.conf || true
   modprobe wireguard 2>/dev/null || true
-  pip install dnspython requests cryptography pyOpenSSL
+
+  # Use python3 -m pip so we don’t care about pip vs pip3 name
+  if command -v python3 >/dev/null; then
+    python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
+    python3 -m pip install dnspython requests cryptography pyOpenSSL || true
+  fi
+
   systemctl enable --now qemu-guest-agent chrony rsyslog ssh || true
 
   cat >/etc/sysctl.d/99-master.conf <<'EOF'
@@ -843,6 +918,7 @@ net.ipv4.ip_forward=1
 net.ipv4.conf.all.rp_filter=2
 net.ipv4.conf.default.rp_filter=2
 EOF
+
   sysctl --system || true
 }
 
@@ -1225,7 +1301,47 @@ EOF
 pillars_and_states_seed() {
   log "Seeding minimal /srv/pillar and /srv/salt skeleton"
 
-  install -d -m0755 /srv/pillar /srv/salt/common /srv/salt/roles
+  # ---------------------------------------------------------------------------
+  # Ensure directory skeleton exists *before* any redirections
+  # ---------------------------------------------------------------------------
+  install -d -m0755 /srv/pillar
+  install -d -m0755 /srv/salt
+  install -d -m0755 /srv/salt/common
+  install -d -m0755 /srv/salt/roles
+
+  # ---------------------------------------------------------------------------
+  # Normalise cluster layout variables (protect against set -u)
+  # ---------------------------------------------------------------------------
+  : "${DOMAIN:=unixbox.net}"
+  : "${MASTER_LAN:=10.100.10.224}"
+
+  : "${K8SLB1_NAME:=k8s-lb1}"
+  : "${K8SLB1_IP:=10.100.10.213}"
+  : "${K8SLB2_NAME:=k8s-lb2}"
+  : "${K8SLB2_IP:=10.100.10.212}"
+
+  : "${K8SCP1_NAME:=k8s-cp1}"
+  : "${K8SCP1_IP:=10.100.10.219}"
+  : "${K8SCP2_NAME:=k8s-cp2}"
+  : "${K8SCP2_IP:=10.100.10.218}"
+  : "${K8SCP3_NAME:=k8s-cp3}"
+  : "${K8SCP3_IP:=10.100.10.217}"
+
+  : "${K8SW1_NAME:=k8s-w1}"
+  : "${K8SW1_IP:=10.100.10.216}"
+  : "${K8SW2_NAME:=k8s-w2}"
+  : "${K8SW2_IP:=10.100.10.215}"
+  : "${K8SW3_NAME:=k8s-w3}"
+  : "${K8SW3_IP:=10.100.10.214}"
+
+  # ---------------------------------------------------------------------------
+  # Pillar: top.sls
+  # ---------------------------------------------------------------------------
+  cat >/srv/pillar/top.sls <<'EOF'
+base:
+  '*':
+    - cluster
+EOF
 
   # ---------------------------------------------------------------------------
   # Pillar: cluster layout (domain, master, and full K8s node map)
@@ -1314,7 +1430,7 @@ base:
 EOF
 
   # ---------------------------------------------------------------------------
-  # common/baseline.sls (unchanged, just basic tools)
+  # common/baseline.sls (basic tools)
   # ---------------------------------------------------------------------------
   cat >/srv/salt/common/baseline.sls <<'EOF'
 common-baseline:
@@ -1325,13 +1441,6 @@ common-baseline:
       - vim-tiny
       - jq
 EOF
-
-  # ---------------------------------------------------------------------------
-  # roles/grafana.sls, roles/prometheus.sls, roles/storage.sls
-  # (leave your existing versions unless you want to tweak them)
-  # ---------------------------------------------------------------------------
-  # ... your existing grafana / prometheus / storage role cat <<'EOF' blocks ...
-  # I’m not repeating them here, since they don’t affect K8s topology.
 
   # ---------------------------------------------------------------------------
   # roles/k8s_admin.sls  (K8s toolbox/jumphost)
@@ -1760,7 +1869,7 @@ k8s-kubelet-service:
 EOF
 
   # ---------------------------------------------------------------------------
-  # roles/k8s_lb.sls  (HAProxy for K8s API, fixed to use pillar instead of ${DOMAIN})
+  # roles/k8s_lb.sls  (HAProxy for K8s API – pillar-driven)
   # ---------------------------------------------------------------------------
   cat >/srv/salt/roles/k8s_lb.sls <<'EOF'
 # Kubernetes API load balancer (HAProxy) for Debian 13
@@ -1818,7 +1927,7 @@ k8s-lb-haproxy-config:
 {% for cp in control_planes %}
           server {{ cp.name }} {{ cp.ip }}:6443 check
 {% endfor %}
-  # if control_planes is empty, you’ll get an empty backend; that’s fine until pillar is correct.
+  # If control_planes is empty, backend will be empty until pillar is updated.
 
 k8s-lb-haproxy-service:
   service.running:
@@ -1829,7 +1938,7 @@ k8s-lb-haproxy-service:
 EOF
 
   # ---------------------------------------------------------------------------
-  # roles/k8s_flannel.sls (unchanged – CNI from upstream manifest)
+  # roles/k8s_flannel.sls (CNI from upstream manifest)
   # ---------------------------------------------------------------------------
   cat >/srv/salt/roles/k8s_flannel.sls <<'EOF'
 # Flannel CNI deployment for Kubernetes
@@ -2042,9 +2151,6 @@ table inet filter {
     iifname "wg2" accept
     iifname "wg3" accept
 
-    # (Optional) Explicit mgmt LAN allow if you ever drop generic 22/4505/4506:
-    # ip saddr 10.100.10.0/24 tcp dport { 22, 4505, 4506 } accept
-
     #################################################################
     # Default-drop everything else
     #################################################################
@@ -2102,7 +2208,7 @@ PS1='\u@\h:\w\$ '
 # Banner
 # -------------------------------------------------------------------
 fb_banner() {
-  cat << 'EOF'
+  cat << 'FBBANNER'
    ___                           __                  ______          __
  /'___\                         /\ \                /\     \        /\ \__
 /\ \__/  ___   __  __    ___    \_\ \  _ __   __  __\ \ \L\ \    ___\ \ ,_\
@@ -2114,7 +2220,7 @@ fb_banner() {
                                                   \/__/
            secure cluster deploy & control
 
-EOF
+FBBANNER
 }
 
 # Only show once per interactive session
@@ -2207,17 +2313,14 @@ skvers() {
 
 # "World" apply helpers – tweak state names to your liking
 fb_world() {
-  # Top-level world state for all minions
   echo "Applying 'world' state to all minions..."
   salt "*" state.apply world
 }
 
 fb_k8s_cluster() {
-  # Apply k8s cluster state to control-plane + workers
   echo "Applying 'k8s.cluster' to role:k8s_cp and role:k8s_worker..."
   salt -C 'G@role:k8s_cp or G@role:k8s_worker' state.apply k8s.cluster
 }
-
 # -------------------------------------------------------------------
 # Kubernetes helper commands (Salt-powered via role:k8s_cp)
 # -------------------------------------------------------------------
@@ -2490,6 +2593,7 @@ fi
 # -------------------------------------------------------------------
 echo "Welcome $USER — connected to $(hostname) on $(date)"
 echo "Type 'shl' for the foundryBot helper command list."
+EOF
 }
 
 # -----------------------------------------------------------------------------
@@ -2541,10 +2645,15 @@ EOF
   log ".tmux.conf copied to /root/.tmux.conf"
 }
 
+# Backwards-compat wrapper (if anything else ever calls this name)
+seed_tmux_conf() {
+  write_tmux_conf
+}
+
 # -----------------------------------------------------------------------------
 setup_vim_config() {
   log "Writing standard Vim config..."
-    apt-get install -y \
+  apt-get install -y \
     vim \
     git \
     vim-airline \
@@ -2630,7 +2739,7 @@ let g:airline#themes#custom#palette.inactive = airline#themes#generate_color_map
 EOF
 
   mkdir -p /root/.vim/autoload/airline/themes
-  cp  /etc/skel/.vimrc /root/.vimrc
+  cp /etc/skel/.vimrc /root/.vimrc
   chmod 644 /root/.vimrc
   cp /etc/skel/.vim/autoload/airline/themes/custom.vim /root/.vim/autoload/airline/themes/custom.vim
   chmod 644 /root/.vim/autoload/airline/themes/custom.vim
@@ -2657,17 +2766,21 @@ setup_python_env() {
   # Auto-activate for root
   local ROOT_BASHRC="/root/.bashrc"
   if ! grep -q "$VENV_DIR" "$ROOT_BASHRC"; then
-    echo "" >> "$ROOT_BASHRC"
-    echo "# Auto-activate BCC virtualenv" >> "$ROOT_BASHRC"
-    echo "source \"$VENV_DIR/bin/activate\"" >> "$ROOT_BASHRC"
+    {
+      echo ""
+      echo "# Auto-activate BCC virtualenv"
+      echo "source \"$VENV_DIR/bin/activate\""
+    } >> "$ROOT_BASHRC"
   fi
 
   # Auto-activate for future users
   local SKEL_BASHRC="/etc/skel/.bashrc"
   if ! grep -q "$VENV_DIR" "$SKEL_BASHRC"; then
-    echo "" >> "$SKEL_BASHRC"
-    echo "# Auto-activate BCC virtualenv if available" >> "$SKEL_BASHRC"
-    echo "[ -d \"$VENV_DIR\" ] && source \"$VENV_DIR/bin/activate\"" >> "$SKEL_BASHRC"
+    {
+      echo ""
+      echo "# Auto-activate BCC virtualenv if available"
+      echo "[ -d \"$VENV_DIR\" ] && source \"$VENV_DIR/bin/activate\""
+    } >> "$SKEL_BASHRC"
   fi
 
   log "Virtualenv activation added to root and skel .bashrc"
@@ -2678,7 +2791,7 @@ sync_skel_to_existing_users() {
   log "Syncing skel configs to existing users (root + baked)..."
 
   local files=".bashrc .vimrc .tmux.conf"
-  local homes="/root" 
+  local homes="/root"
   homes+=" $(find /home -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)"
 
   for home in $homes; do
@@ -2705,11 +2818,11 @@ main_master() {
   semaphore_stack
   configure_salt_master_network
   configure_nftables_master
-  sync_skel_to_existing_users
   write_bashrc
   write_tmux_conf
   setup_vim_config
   setup_python_env
+  sync_skel_to_existing_users
 
   # Clean up unnecessary services
   systemctl disable --now openipmi.service 2>/dev/null || true
@@ -2727,8 +2840,8 @@ main_master() {
 
   log "Powering off in 2s..."
   (sleep 2; systemctl --no-block poweroff) & disown
-
 }
+
 main_master
 EOS
 }
@@ -3810,3 +3923,4 @@ case "$TARGET" in
     die "Unknown TARGET '$TARGET'. Expected: proxmox-all | proxmox-cluster | proxmox-k8s-ha | image-only | packer-scaffold | aws-ami | aws-run | firecracker-bundle | firecracker | vmdk-export"
     ;;
 esac
+(eBPF) root@onyx:~/foundryBot# 
