@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# test
 # 03_prepare_squashfs.sh - unsquash live filesystem for customization
 
 set -euo pipefail
