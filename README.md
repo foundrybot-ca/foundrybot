@@ -126,9 +126,7 @@ bash ./build.sh
 3. Captured VMs/services are restored to the **exact last build** state.  
 4. Re‑apply any Phase‑2 policy (if you keep it in‑repo) or your CM stack.  
 
-## Best Practices
-- Schedule `build.sh` periodically (e.g., weekly) to keep a fresh, self‑contained recovery point.  
-- Store artifacts on separate storage with **checksums** and **signatures**.  
-- Document the admin SSH key and the minimal env you use for repeatability.  
-- Test both paths (`deploy.sh` and `build.sh`) in a small lab before production.
+## Other Files
+- `apply.py` finishes off the cluster install, updates wireguard and applys salt-states
+- `clone.sh` automati clone and deployment tool for proxmox, multi target/multi nodes, ie: point and shoot
 
