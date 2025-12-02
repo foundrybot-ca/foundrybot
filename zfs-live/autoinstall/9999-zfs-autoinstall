@@ -138,7 +138,6 @@ need_cmd zpool
 need_cmd zfs
 need_cmd debootstrap
 need_cmd grub-install
-need_cmd update-grub || need_cmd update-grub2
 need_cmd mkfs.vfat
 need_cmd modprobe
 
