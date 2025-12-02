@@ -2,7 +2,7 @@
 
 **One command lays the foundation.** `deploy.sh` (connected) installs the OS, wiring (network/storage), container runtime, and secure defaults using public Internet sources—then **hands off** so you can apply configuration with your tools (Ansible/Salt/Puppet/Chef/custom) or the optional `apply.py`. WireGuard devices are created and **keys generated**; **no peers are added** by default so you can drop into your own mesh cleanly.
 
-`build.sh` similar to deploy, except ALL resources are "re-packed" into a darksite directory, this provides versioned fail safe 100% MTTR. IE: when AWS west blows up, export the image, convert to Azure and execute the build.sh, when its done MTTR is complete and your good to go.  No broken snapshots, failed backups/updates or upgrades or disaperaing repos, everything required is included in the .iso/image.
+`build.sh` similar to deploy, except ALL resources are "re-packed" into a darksite directory, this provides versioned fail safe 100% MTTR. IE: when AWS west blows up, export the image, convert to Azure and execute the build.sh, when its done MTTR is complete and your good to go.  No broken snapshots, failed backups/updates or upgrades or disaperaing repos, everything required is included in the .iso/image and it is completely agnostic/connected via a native l3 hub & spoke backplane.
 
 ## Scope & Expectations (read first)
 - **Foundation first**: Phase‑1 builds OS + plumbing; Phase‑2 is your config (BYO or `apply.py`).
