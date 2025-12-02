@@ -1,4 +1,4 @@
-i#!/usr/bin/env bash
+#!/usr/bin/env bash
 # 02_unpack_iso.sh - extract base Debian live ISO into the ISO work directory
 
 set -euo pipefail
