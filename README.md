@@ -1,6 +1,8 @@
-# FoundryBot — Public Internet Bootstrap
+# FoundryBot
 
-**One command lays the foundation.** `deploy.sh` installs the OS, wiring (network/storage), container runtime, and secure defaults using public Internet sources—then **hands off** so you can apply configuration with your tools (Ansible/Salt/Puppet/Chef/custom) or the optional `apply.py`. WireGuard devices are created and **keys generated**; **no peers are added** by default so you can drop into your own mesh cleanly.
+**One command lays the foundation.** `deploy.sh` (connected) installs the OS, wiring (network/storage), container runtime, and secure defaults using public Internet sources—then **hands off** so you can apply configuration with your tools (Ansible/Salt/Puppet/Chef/custom) or the optional `apply.py`. WireGuard devices are created and **keys generated**; **no peers are added** by default so you can drop into your own mesh cleanly.
+
+`build.sh` similar to deploy, except ALL resources are "re-packed" into a darksite directory, this provides versioned fail safe 100% MTTR. IE: when AWS west blows up, export the image, convert to Azure and execute the build.sh, when its done MTTR is complete and your good to go.  No broken snapshots, failed backups/updates or upgrades or disaperaing repos, everything required is included in the .iso/image and it is completely agnostic/connected via a native l3 hub & spoke backplane.
 
 ## Scope & Expectations (read first)
 - **Foundation first**: Phase‑1 builds OS + plumbing; Phase‑2 is your config (BYO or `apply.py`).
@@ -126,9 +128,7 @@ bash ./build.sh
 3. Captured VMs/services are restored to the **exact last build** state.  
 4. Re‑apply any Phase‑2 policy (if you keep it in‑repo) or your CM stack.  
 
-## Best Practices
-- Schedule `build.sh` periodically (e.g., weekly) to keep a fresh, self‑contained recovery point.  
-- Store artifacts on separate storage with **checksums** and **signatures**.  
-- Document the admin SSH key and the minimal env you use for repeatability.  
-- Test both paths (`deploy.sh` and `build.sh`) in a small lab before production.
+## Other Files
+- `apply.py` finishes off the cluster install, updates wireguard and applys salt-states
+- `clone.sh` automati clone and deployment tool for proxmox, multi target/multi nodes, ie: point and shoot
 
