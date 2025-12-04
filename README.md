@@ -196,6 +196,7 @@ You do **not** need:
 - Terraform
 - Packer
 - Ansible/Salt/Puppet/Chef
+- Tailscale/Netbird or other snd tools
 - Any cloud-specific image tooling
 - Any SaaS CI/CD service
 
