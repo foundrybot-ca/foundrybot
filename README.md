@@ -1,14 +1,14 @@
 # FoundryBot  
 **One foundation. Any cloud. Any hypervisor. Any hardware.**
 
-FoundryBot is a **minimal, self-contained OS foundry**:
+A **minimal, self-contained OS foundry**:
 
 - It **installs a fresh OS from scratch** every time.
 - It **wires networking/storage/security/runtime** in a predictable way.
 - It **produces images for any target** (clouds, hypervisors, bare metal, PXE).
 - It can optionally **capture everything into a fully self-contained “darksite” bundle** that lets you rebuild years later with **zero external dependencies**.
 
-It does **not** depend on:
+It does **not** depend on **ANY** of these tools, but at the same works seemelessly **WITH ALL OF THEM**
 
 - Git  
 - Terraform  
