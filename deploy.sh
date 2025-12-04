@@ -114,8 +114,7 @@ esac
 
 # ISO_ORIG: source Debian ISO used to build custom images.
 #   Typical: netinst or DVD ISO path on the build host.
-# ISO_ORIG="${ISO_ORIG:-/root/debian-13.1.0-amd64-netinst.iso}"
-ISO_ORIG="${ISO_ORIG:-/root/debian-live-13.2.0-amd64-standard.iso}"
+ISO_ORIG="${ISO_ORIG:-/root/debian-13.1.0-amd64-netinst.iso}"
 
 # ISO_STORAGE: Proxmox storage ID for ISO upload.
 #   Examples: local, local-zfs, iso-store
@@ -130,7 +129,7 @@ VM_STORAGE="${VM_STORAGE:-local-zfs}"
 # =============================================================================
 
 # MASTER_ID: Proxmox VMID for master node.
-MASTER_ID="${MASTER_ID:-1000}"
+MASTER_ID="${MASTER_ID:-2000}"
 
 # MASTER_NAME: VM name in Proxmox.
 MASTER_NAME="${MASTER_NAME:-master}"
@@ -153,10 +152,10 @@ NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3 1.1.1.1}"
 # =============================================================================
 # prom / graf / k8s / storage – these are the "core" non-K8s nodes.
 
-PROM_ID="${PROM_ID:-1001}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
-GRAF_ID="${GRAF_ID:-1002}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
-K8S_ID="${K8S_ID:-1003}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.221}"
-STOR_ID="${STOR_ID:-1004}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
+PROM_ID="${PROM_ID:-2001}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
+GRAF_ID="${GRAF_ID:-2002}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
+K8S_ID="${K8S_ID:-2003}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.221}"
+STOR_ID="${STOR_ID:-2004}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
 
 # =============================================================================
 # WireGuard hub addresses (planes / fabrics)
@@ -193,16 +192,16 @@ STOR_WG0="${STOR_WG0:-10.77.0.5/32}"; STOR_WG1="${STOR_WG1:-10.78.0.5/32}"; STOR
 # =============================================================================
 # IDs/IPs assume a contiguous /24; adjust to match your LAN.
 
-K8SLB1_ID="${K8SLB1_ID:-1005}"; K8SLB1_NAME="${K8SLB1_NAME:-k8s-lb1}"; K8SLB1_IP="${K8SLB1_IP:-10.100.10.213}"
-K8SLB2_ID="${K8SLB2_ID:-1006}"; K8SLB2_NAME="${K8SLB2_NAME:-k8s-lb2}"; K8SLB2_IP="${K8SLB2_IP:-10.100.10.212}"
+K8SLB1_ID="${K8SLB1_ID:-2005}"; K8SLB1_NAME="${K8SLB1_NAME:-k8s-lb1}"; K8SLB1_IP="${K8SLB1_IP:-10.100.10.213}"
+K8SLB2_ID="${K8SLB2_ID:-2006}"; K8SLB2_NAME="${K8SLB2_NAME:-k8s-lb2}"; K8SLB2_IP="${K8SLB2_IP:-10.100.10.212}"
 
-K8SCP1_ID="${K8SCP1_ID:-1007}"; K8SCP1_NAME="${K8SCP1_NAME:-k8s-cp1}"; K8SCP1_IP="${K8SCP1_IP:-10.100.10.219}"
-K8SCP2_ID="${K8SCP2_ID:-1008}"; K8SCP2_NAME="${K8SCP2_NAME:-k8s-cp2}"; K8SCP2_IP="${K8SCP2_IP:-10.100.10.218}"
-K8SCP3_ID="${K8SCP3_ID:-1009}"; K8SCP3_NAME="${K8SCP3_NAME:-k8s-cp3}"; K8SCP3_IP="${K8SCP3_IP:-10.100.10.217}"
+K8SCP1_ID="${K8SCP1_ID:-2007}"; K8SCP1_NAME="${K8SCP1_NAME:-k8s-cp1}"; K8SCP1_IP="${K8SCP1_IP:-10.100.10.219}"
+K8SCP2_ID="${K8SCP2_ID:-2008}"; K8SCP2_NAME="${K8SCP2_NAME:-k8s-cp2}"; K8SCP2_IP="${K8SCP2_IP:-10.100.10.218}"
+K8SCP3_ID="${K8SCP3_ID:-2009}"; K8SCP3_NAME="${K8SCP3_NAME:-k8s-cp3}"; K8SCP3_IP="${K8SCP3_IP:-10.100.10.217}"
 
-K8SW1_ID="${K8SW1_ID:-1010}"; K8SW1_NAME="${K8SW1_NAME:-k8s-w1}"; K8SW1_IP="${K8SW1_IP:-10.100.10.216}"
-K8SW2_ID="${K8SW2_ID:-1011}"; K8SW2_NAME="${K8SW2_NAME:-k8s-w2}"; K8SW2_IP="${K8SW2_IP:-10.100.10.215}"
-K8SW3_ID="${K8SW3_ID:-1012}"; K8SW3_NAME="${K8SW3_NAME:-k8s-w3}"; K8SW3_IP="${K8SW3_IP:-10.100.10.214}"
+K8SW1_ID="${K8SW1_ID:-2010}"; K8SW1_NAME="${K8SW1_NAME:-k8s-w1}"; K8SW1_IP="${K8SW1_IP:-10.100.10.216}"
+K8SW2_ID="${K8SW2_ID:-2011}"; K8SW2_NAME="${K8SW2_NAME:-k8s-w2}"; K8SW2_IP="${K8SW2_IP:-10.100.10.215}"
+K8SW3_ID="${K8SW3_ID:-2012}"; K8SW3_NAME="${K8SW3_NAME:-k8s-w3}"; K8SW3_IP="${K8SW3_IP:-10.100.10.214}"
 
 # =============================================================================
 # Per-node K8s WG /32s (extended layout)
@@ -2857,53 +2856,38 @@ emit_postinstall_minion() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOG="/var/log/postinstall-minion.log"
+LOG="/var/log/minion-postinstall.log"
 exec > >(tee -a "$LOG") 2>&1
 exec 2>&1
 trap 'echo "[X] Failed at line $LINENO" >&2' ERR
 log(){ echo "[INFO] $(date '+%F %T') - $*"; }
 
-# ---------------------------------------------------------------------------
-# Load seed environment if present (from mk_iso / darksite baking)
-# ---------------------------------------------------------------------------
+# ---- Import environment from mk_iso wrapper ----
 if [ -r /etc/environment.d/99-provision.conf ]; then
   # shellcheck disable=SC2046
   export $(grep -E '^[A-Z0-9_]+=' /etc/environment.d/99-provision.conf | xargs -d'\n' || true)
 fi
 
-# ---------------------------------------------------------------------------
-# Defaults (safe for set -u; all variables we might touch get a default)
-# ---------------------------------------------------------------------------
-DOMAIN="${DOMAIN:-unixbox.net}"
-
 ADMIN_USER="${ADMIN_USER:-todd}"
 ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-no}"
+MY_GROUP="${MY_GROUP:-prom}"
 
-ROLE="${ROLE:-generic}"          # e.g. k8s-cp, k8s-worker, graf, prometheus, storage, k8s-lb, k8s
+# Per-minion WireGuard IPs (seeded by wrapper)
+WG0_WANTED="${WG0_WANTED:-10.77.0.2/32}"  # reserved; not used for services
+WG1_WANTED="${WG1_WANTED:-10.78.0.2/32}"  # Ansible / SSH plane
+WG2_WANTED="${WG2_WANTED:-10.79.0.2/32}"  # Metrics plane
+WG3_WANTED="${WG3_WANTED:-10.80.0.2/32}"  # K8s side/back plane
 
-# Salt master location (minion will point here)
-MASTER_LAN="${MASTER_LAN:-10.100.10.224}"
-SALT_MASTER_IP="${SALT_MASTER_IP:-$MASTER_LAN}"
+# Where hub.env may be
+HUB_ENV_CANDIDATES=(
+  "/root/darksite/cluster-seed/hub.env"
+  "/root/cluster-seed/hub.env"
+  "/srv/wg/hub.env"
+)
 
-# WireGuard / hub metadata (minion side)
-# If mk_iso seeds these per-node, they will override; otherwise, safe defaults.
-WG0_IP="${WG0_IP:-10.77.0.2/16}"; WG0_PORT="${WG0_PORT:-51820}"
-WG1_IP="${WG1_IP:-10.78.0.2/16}"; WG1_PORT="${WG1_PORT:-51821}"
-WG2_IP="${WG2_IP:-10.79.0.2/16}"; WG2_PORT="${WG2_PORT:-51822}"
-WG3_IP="${WG3_IP:-10.80.0.2/16}"; WG3_PORT="${WG3_PORT:-51823}"
-
-WG_ALLOWED_CIDR="${WG_ALLOWED_CIDR:-10.77.0.0/16,10.78.0.0/16,10.79.0.0/16,10.80.0.0/16}"
-
-# Hub metadata (parsed from hub.env if present)
-HUB_ENV="${HUB_ENV:-/root/darksite/hub.env}"
-[ -r /srv/wg/hub.env ] && HUB_ENV="/srv/wg/hub.env"
-
-# ---------------------------------------------------------------------------
-# Base system
-# ---------------------------------------------------------------------------
-ensure_base_minion() {
-  log "Configuring APT & base system packages (minion)"
-
+# ---------- Base OS ----------
+ensure_base() {
+  log "Configuring APT & base OS packages"
   export DEBIAN_FRONTEND=noninteractive
 
   cat >/etc/apt/sources.list <<'EOF'
@@ -2919,89 +2903,70 @@ EOF
 
   apt-get install -y --no-install-recommends \
     sudo openssh-server curl wget ca-certificates gnupg jq xxd unzip tar \
-    iproute2 iputils-ping net-tools \
+    iproute2 iputils-ping ethtool tcpdump net-tools \
     nftables wireguard-tools \
-    python3-venv python3-pip python3-bpfcc python3-psutil \
     chrony rsyslog qemu-guest-agent vim \
-    salt-minion prometheus-node-exporter || true
+    prometheus-node-exporter || true
 
   echo wireguard >/etc/modules-load.d/wireguard.conf || true
   modprobe wireguard 2>/dev/null || true
 
-  if command -v python3 >/dev/null; then
-    python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
-    python3 -m pip install dnspython requests cryptography pyOpenSSL || true
-  fi
-
-  systemctl enable --now qemu-guest-agent chrony rsyslog ssh || true
+  systemctl enable --now ssh chrony rsyslog qemu-guest-agent || true
 
   cat >/etc/sysctl.d/99-minion.conf <<'EOF'
-net.ipv4.ip_forward=1
 net.ipv4.conf.all.rp_filter=2
 net.ipv4.conf.default.rp_filter=2
 EOF
-
   sysctl --system || true
 }
 
-# ---------------------------------------------------------------------------
-# Users & SSH hardening (mirrors master’s behaviour)
-# ---------------------------------------------------------------------------
-ensure_users_minion() {
-  log "Ensuring ${ADMIN_USER} + ansible users exist"
+# ---------- Admin user / SSH ----------
+ensure_admin_user() {
+  log "Ensuring admin user ${ADMIN_USER}"
 
   local SEED="/root/darksite/authorized_keys.${ADMIN_USER}"
-  local PUB=""
-  [[ -s "$SEED" ]] && PUB="$(head -n1 "$SEED")"
+  local PUB=""; [ -s "$SEED" ] && PUB="$(head -n1 "$SEED")"
 
-  mkuser() {
-    local u="$1" k="$2"
-    id -u "$u" &>/dev/null || useradd -m -s /bin/bash "$u"
-    install -d -m700 -o "$u" -g "$u" "/home/$u/.ssh"
-    touch "/home/$u/.ssh/authorized_keys"
-    chmod 600 "/home/$u/.ssh/authorized_keys"
-    chown -R "$u:$u" "/home/$u/.ssh"
+  if ! id -u "${ADMIN_USER}" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash "${ADMIN_USER}"
+  fi
+  install -d -m700 -o "${ADMIN_USER}" -g "${ADMIN_USER}" "/home/${ADMIN_USER}/.ssh"
+  touch "/home/${ADMIN_USER}/.ssh/authorized_keys"
+  chmod 600 "/home/${ADMIN_USER}/.ssh/authorized_keys"
+  chown -R "${ADMIN_USER}:${ADMIN_USER}" "/home/${ADMIN_USER}/.ssh"
 
-    if [[ -n "$k" ]] && ! grep -qxF "$k" "/home/$u/.ssh/authorized_keys"; then
-      printf '%s\n' "$k" >> "/home/$u/.ssh/authorized_keys"
-    fi
-
-    install -d -m755 /etc/sudoers.d
-    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$u" >"/etc/sudoers.d/90-$u"
-    chmod 0440 "/etc/sudoers.d/90-$u"
-  }
-
-  mkuser "$ADMIN_USER" "$PUB"
-
-  # ansible service user
-  id -u ansible &>/dev/null || useradd -m -s /bin/bash -G sudo ansible
-  install -d -m700 -o ansible -g ansible /home/ansible/.ssh
-  [[ -s /home/ansible/.ssh/id_ed25519 ]] || \
-    runuser -u ansible -- ssh-keygen -t ed25519 -N "" -f /home/ansible/.ssh/id_ed25519
-  install -m0644 /home/ansible/.ssh/id_ed25519.pub /home/ansible/.ssh/authorized_keys
-  chown ansible:ansible /home/ansible/.ssh/authorized_keys
-  chmod 600 /home/ansible/.ssh/authorized_keys
-
-  # Allow cluster enrollment key to log in as ADMIN_USER (same as master)
-  local ENROLL_PUB_SRC="/root/darksite/enroll_ed25519.pub"
-  if [[ -s "$ENROLL_PUB_SRC" ]]; then
-    local ENROLL_PUB
-    ENROLL_PUB="$(head -n1 "$ENROLL_PUB_SRC")"
-    if ! grep -qxF "$ENROLL_PUB" "/home/${ADMIN_USER}/.ssh/authorized_keys"; then
-      printf '%s\n' "$ENROLL_PUB" >> "/home/${ADMIN_USER}/.ssh/authorized_keys"
-    fi
+  if [ -n "$PUB" ] && ! grep -qxF "$PUB" "/home/${ADMIN_USER}/.ssh/authorized_keys"; then
+    echo "$PUB" >> "/home/${ADMIN_USER}/.ssh/authorized_keys"
   fi
 
-  # Backplane corresponds to wg1
-  local BACKPLANE_IF="wg1"
-  local BACKPLANE_IP="${WG1_IP%/*}"
+  install -d -m755 /etc/sudoers.d
+  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${ADMIN_USER}" >"/etc/sudoers.d/90-${ADMIN_USER}"
+  chmod 0440 "/etc/sudoers.d/90-${ADMIN_USER}"
+}
 
+# Install the shared enrollment SSH key used to talk back to the hub
+install_enroll_key() {
+  log "Installing cluster enrollment SSH key (for auto-enroll & registration)"
+
+  local SRC_PRIV="/root/darksite/enroll_ed25519"
+  local SRC_PUB="/root/darksite/enroll_ed25519.pub"
+  local DST_DIR="/root/.ssh"
+  local DST_PRIV="${DST_DIR}/enroll_ed25519"
+  local DST_PUB="${DST_DIR}/enroll_ed25519.pub"
+
+  if [[ ! -r "$SRC_PRIV" || ! -r "$SRC_PUB" ]]; then
+    log "No enroll_ed25519 keypair found in /root/darksite; skipping install"
+    return 0
+  fi
+
+  install -d -m700 "$DST_DIR"
+  install -m600 "$SRC_PRIV" "$DST_PRIV"
+  install -m644 "$SRC_PUB" "$DST_PUB"
+}
+
+# We'll wire SSH into LAN+wg1 after wg1 exists
+ssh_hardening_static() {
   install -d -m755 /etc/ssh/sshd_config.d
-  cat >/etc/ssh/sshd_config.d/00-listen.conf <<EOF
-ListenAddress 0.0.0.0
-ListenAddress ${BACKPLANE_IP}
-AllowUsers ${ADMIN_USER} ansible
-EOF
 
   cat >/etc/ssh/sshd_config.d/99-hard.conf <<'EOF'
 PermitRootLogin no
@@ -3015,7 +2980,7 @@ EOF
 
   if [ "${ALLOW_ADMIN_PASSWORD}" = "yes" ]; then
     cat >/etc/ssh/sshd_config.d/10-admin-lan-password.conf <<EOF
-Match User ${ADMIN_USER} Address 10.0.0.0/8
+Match User ${ADMIN_USER} Address 10.100.10.0/24
     PasswordAuthentication yes
 EOF
   fi
@@ -3023,120 +2988,137 @@ EOF
   install -d -m755 /etc/systemd/system/ssh.service.d
   cat >/etc/systemd/system/ssh.service.d/wg-order.conf <<'EOF'
 [Unit]
-After=wg-quick@wg1.service network-online.target
+After=wg-quick@wg1.service wg-quick@wg2.service wg-quick@wg3.service network-online.target
 Wants=wg-quick@wg1.service network-online.target
 EOF
 
-  (sshd -t && systemctl daemon-reload && systemctl restart ssh) || true
-}
-
-# ---------------------------------------------------------------------------
-# Parse hub.env (if present) to get master pubkeys + endpoints
-# ---------------------------------------------------------------------------
-parse_hub_env() {
-  log "Parsing hub.env (if present) for WireGuard metadata"
-  HUB_WG1_NET=""
-  HUB_WG2_NET=""
-  HUB_WG3_NET=""
-  HUB_LAN=""
-  HUB_WG1_PUB=""
-  HUB_WG2_PUB=""
-  HUB_WG3_PUB=""
-  HUB_WG0_PUB=""
-  HUB_WG0_PORT=""
-  HUB_WG1_PORT=""
-  HUB_WG2_PORT=""
-  HUB_WG3_PORT=""
-
-  if [[ -r "$HUB_ENV" ]]; then
-    # shellcheck disable=SC1090
-    source "$HUB_ENV" || true
-
-    HUB_LAN="${HUB_LAN:-$MASTER_LAN}"
-    HUB_WG1_NET="${HUB_WG1_NET:-10.78.0.0/16}"
-    HUB_WG2_NET="${HUB_WG2_NET:-10.79.0.0/16}"
-    HUB_WG3_NET="${HUB_WG3_NET:-10.80.0.0/16}"
-
-    HUB_WG0_PUB="${WG0_PUB:-}"
-    HUB_WG1_PUB="${WG1_PUB:-}"
-    HUB_WG2_PUB="${WG2_PUB:-}"
-    HUB_WG3_PUB="${WG3_PUB:-}"
-
-    HUB_WG0_PORT="${WG0_PORT:-$WG0_PORT}"
-    HUB_WG1_PORT="${WG1_PORT:-$WG1_PORT}"
-    HUB_WG2_PORT="${WG2_PORT:-$WG2_PORT}"
-    HUB_WG3_PORT="${WG3_PORT:-$WG3_PORT}"
+  if sshd -t; then
+    systemctl daemon-reload
+    systemctl restart ssh || true
   else
-    log "NOTE: $HUB_ENV not found; WireGuard peers will not be auto-populated"
+    log "WARNING: sshd config test failed (pre-WG); will retry after WG1 setup"
   fi
 }
 
-# ---------------------------------------------------------------------------
-# WireGuard setup (minion side)
-# ---------------------------------------------------------------------------
-wg_minion_setup() {
+# Later, after wg1 is up, bind ssh explicitly to LAN + wg1 IPs
+ssh_bind_lan_and_wg1() {
+  log "Configuring SSH ListenAddress for LAN + wg1"
+
+  local LAN_IP WG1_ADDR
+  LAN_IP="$(ip -4 addr show scope global | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
+  WG1_ADDR="$(echo "${WG1_WANTED}" | cut -d/ -f1)"
+
+  if [ -z "$LAN_IP" ]; then
+    log "WARNING: could not detect LAN IP; leaving ListenAddress unchanged"
+    return 0
+  fi
+
+  cat >/etc/ssh/sshd_config.d/00-listen.conf <<EOF
+ListenAddress ${LAN_IP}
+ListenAddress ${WG1_ADDR}
+EOF
+
+  if sshd -t; then
+    systemctl daemon-reload
+    systemctl restart ssh || true
+  else
+    log "WARNING: sshd config test failed; keeping previous sshd config"
+  fi
+}
+
+# ---------- Read hub.env (from master) ----------
+read_hub() {
+  log "Searching for hub.env"
+  local f
+  for f in "${HUB_ENV_CANDIDATES[@]}"; do
+    if [ -r "$f" ]; then
+      log "Loading hub env from $f"
+      # shellcheck disable=SC1090
+      . "$f"
+      break
+    fi
+  done
+
+  : "${HUB_LAN:?missing HUB_LAN in hub.env}"
+  : "${WG1_PUB:?missing WG1_PUB in hub.env}"
+  : "${WG2_PUB:?missing WG2_PUB in hub.env}"
+  : "${WG3_PUB:?missing WG3_PUB in hub.env}"
+  : "${WG1_PORT:?missing WG1_PORT in hub.env}"
+  : "${WG2_PORT:?missing WG2_PORT in hub.env}"
+  : "${WG3_PORT:?missing WG3_PORT in hub.env}"
+
+  : "${HUB_WG1_NET:?missing HUB_WG1_NET in hub.env}"
+  : "${HUB_WG2_NET:?missing HUB_WG2_NET in hub.env}"
+  : "${HUB_WG3_NET:?missing HUB_WG3_NET in hub.env}"
+
+  : "${WG_ALLOWED_CIDR:?missing WG_ALLOWED_CIDR in hub.env}"
+}
+
+# ---------- WireGuard planes ----------
+wg_setup_all() {
   log "Configuring WireGuard planes on minion"
 
   install -d -m700 /etc/wireguard
   local _old_umask; _old_umask="$(umask)"
   umask 077
-
-  # Local keypair per interface (wg0–wg3)
   local ifn
   for ifn in wg0 wg1 wg2 wg3; do
     [ -f "/etc/wireguard/${ifn}.key" ] || wg genkey | tee "/etc/wireguard/${ifn}.key" | wg pubkey >"/etc/wireguard/${ifn}.pub"
   done
 
-  parse_hub_env
+  # wg0: reserved, not used for services
+  cat >/etc/wireguard/wg0.conf <<EOF
+[Interface]
+Address    = ${WG0_WANTED}
+PrivateKey = $(cat /etc/wireguard/wg0.key)
+ListenPort = 0
+MTU        = 1420
+EOF
 
-  # Helper: build peer section if we have data
-  build_peer_block() {
-    local pub="$1" ip="$2" port="$3"
-    if [[ -n "$pub" && -n "$ip" && -n "$port" ]]; then
-      cat <<EOF
+  # wg1: Ansible / SSH plane
+  cat >/etc/wireguard/wg1.conf <<EOF
+[Interface]
+Address    = ${WG1_WANTED}
+PrivateKey = $(cat /etc/wireguard/wg1.key)
+ListenPort = 0
+MTU        = 1420
+
 [Peer]
-PublicKey = ${pub}
-Endpoint  = ${ip}:${port}
-AllowedIPs = ${WG_ALLOWED_CIDR}
+PublicKey  = ${WG1_PUB}
+Endpoint   = ${HUB_LAN}:${WG1_PORT}
+AllowedIPs = ${HUB_WG1_NET}
 PersistentKeepalive = 25
 EOF
-    else
-      echo "# Peer info not available; run wg-set-peer manually."
-    fi
-  }
 
-  # wg1: control / SSH plane
-  {
-    echo "[Interface]"
-    echo "Address    = ${WG1_IP}"
-    echo "PrivateKey = $(cat /etc/wireguard/wg1.key)"
-    echo "ListenPort = ${WG1_PORT}"
-    echo "MTU        = 1420"
-    echo
-    build_peer_block "${HUB_WG1_PUB:-}" "${HUB_LAN:-$MASTER_LAN}" "${HUB_WG1_PORT:-$WG1_PORT}"
-  } >/etc/wireguard/wg1.conf
+  # wg2: Metrics plane
+  cat >/etc/wireguard/wg2.conf <<EOF
+[Interface]
+Address    = ${WG2_WANTED}
+PrivateKey = $(cat /etc/wireguard/wg2.key)
+ListenPort = 0
+MTU        = 1420
 
-  # wg2: metrics plane
-  {
-    echo "[Interface]"
-    echo "Address    = ${WG2_IP}"
-    echo "PrivateKey = $(cat /etc/wireguard/wg2.key)"
-    echo "ListenPort = ${WG2_PORT}"
-    echo "MTU        = 1420"
-    echo
-    build_peer_block "${HUB_WG2_PUB:-${HUB_WG1_PUB:-}}" "${HUB_LAN:-$MASTER_LAN}" "${HUB_WG2_PORT:-$WG2_PORT}"
-  } >/etc/wireguard/wg2.conf
+[Peer]
+PublicKey  = ${WG2_PUB}
+Endpoint   = ${HUB_LAN}:${WG2_PORT}
+AllowedIPs = ${HUB_WG2_NET}
+PersistentKeepalive = 25
+EOF
 
-  # wg3: optional k8s / app plane – configured similar, but peer optional
-  {
-    echo "[Interface]"
-    echo "Address    = ${WG3_IP}"
-    echo "PrivateKey = $(cat /etc/wireguard/wg3.key)"
-    echo "ListenPort = ${WG3_PORT}"
-    echo "MTU        = 1420"
-    echo
-    build_peer_block "${HUB_WG3_PUB:-${HUB_WG1_PUB:-}}" "${HUB_LAN:-$MASTER_LAN}" "${HUB_WG3_PORT:-$WG3_PORT}"
-  } >/etc/wireguard/wg3.conf
+  # wg3: K8s side/back plane
+  cat >/etc/wireguard/wg3.conf <<EOF
+[Interface]
+Address    = ${WG3_WANTED}
+PrivateKey = $(cat /etc/wireguard/wg3.key)
+ListenPort = 0
+MTU        = 1420
+
+[Peer]
+PublicKey  = ${WG3_PUB}
+Endpoint   = ${HUB_LAN}:${WG3_PORT}
+AllowedIPs = ${HUB_WG3_NET}
+PersistentKeepalive = 25
+EOF
 
   chmod 600 /etc/wireguard/*.conf
   umask "$_old_umask"
@@ -3147,381 +3129,261 @@ EOF
   systemctl enable --now wg-quick@wg3 || true
 }
 
-# ---------------------------------------------------------------------------
-# nftables (minion)
-# ---------------------------------------------------------------------------
-nft_minion_firewall() {
-  log "Writing nftables ruleset for minion"
+auto_enroll_with_hub() {
+  log "Attempting auto-enrollment with hub via wg-add-peer"
 
-  cat >/etc/nftables.conf <<'EOF'
+  local ENROLL_KEY="/root/.ssh/enroll_ed25519"
+  if [[ ! -r "$ENROLL_KEY" ]]; then
+    log "Enrollment SSH key ${ENROLL_KEY} missing; skipping auto-enroll"
+    return 0
+  fi
+
+  local SSHOPTS="-i ${ENROLL_KEY} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=6"
+
+  # Check if enrollment is open
+  local check_cmd='[ -f /srv/wg/ENROLL_ENABLED ]'
+  if ! ssh $SSHOPTS "${ADMIN_USER}@${HUB_LAN}" "$check_cmd" 2>/dev/null; then
+    log "Hub enrollment flag not present or unreachable; skipping wg-add-peer"
+    return 0
+  fi
+
+  local iface wanted pub success any_success=0
+  for iface in wg1 wg2 wg3; do
+    case "$iface" in
+      wg1) wanted="${WG1_WANTED}" ;;
+      wg2) wanted="${WG2_WANTED}" ;;
+      wg3) wanted="${WG3_WANTED}" ;;
+    esac
+    pub="$(cat "/etc/wireguard/${iface}.pub" 2>/dev/null || true)"
+    if [[ -z "$pub" || -z "$wanted" ]]; then
+      log "Skipping ${iface}: missing pubkey or wanted IP"
+      continue
+    fi
+
+    success=0
+    if ssh $SSHOPTS "${ADMIN_USER}@${HUB_LAN}" \
+         "sudo /usr/local/sbin/wg-add-peer '$pub' '$wanted' '$iface'" 2>/dev/null; then
+      success=1
+    fi
+
+    if [[ "$success" -eq 1 ]]; then
+      log "[OK] Enrolled ${iface} (${wanted}) with hub"
+      any_success=1
+    else
+      log "[WARN] Failed to enroll ${iface} with hub"
+    fi
+  done
+
+  if [[ "$any_success" -ne 1 ]]; then
+    log "[WARN] No WG interfaces enrolled with hub; continuing anyway"
+  fi
+}
+
+# ---------- nftables ----------
+nft_min() {
+  log "Installing nftables rules on minion"
+
+  cat >/etc/nftables.conf <<EOF
 #!/usr/sbin/nft -f
-
 flush ruleset
 
 table inet filter {
   chain input {
     type filter hook input priority 0; policy drop;
 
-    ct state established,related accept
+    # Keep established traffic
+    ct state { established, related } accept
 
-    iifname "lo" accept
+    # Localhost
+    iif "lo" accept
 
+    # ICMP
     ip protocol icmp accept
-    ip6 nexthdr icmpv6 accept
 
     # SSH
     tcp dport 22 accept
 
-    # Salt minion's outbound is allowed by output chain; inbound from master is via 4505/4506 on master side.
+    # WireGuard UDP listening ports (if any)
+    udp dport { ${WG1_PORT:-51821}, ${WG2_PORT:-51822}, ${WG3_PORT:-51823} } accept
 
-    # WireGuard
-    udp dport { 51820, 51821, 51822, 51823 } accept
-
-    # Traffic arriving via WireGuard planes
-    iifname "wg0" accept
-    iifname "wg1" accept
-    iifname "wg2" accept
-    iifname "wg3" accept
-  }
-
-  chain forward {
-    type filter hook forward priority 0; policy drop;
-    ct state established,related accept
+    # Allow any packets coming from WG subnets
+    ip saddr { 10.78.0.0/16, 10.79.0.0/16, 10.80.0.0/16 } accept
   }
 
   chain output {
     type filter hook output priority 0; policy accept;
   }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+
+    ct state { established, related } accept
+
+    # Allow forwarding for WG subnets
+    ip saddr { 10.78.0.0/16, 10.79.0.0/16, 10.80.0.0/16 } accept
+    ip daddr { 10.78.0.0/16, 10.79.0.0/16, 10.80.0.0/16 } accept
+  }
 }
 EOF
 
-  chmod 600 /etc/nftables.conf
-  systemctl enable nftables || true
-  nft -f /etc/nftables.conf || true
+  systemctl enable --now nftables || true
 }
 
-# ---------------------------------------------------------------------------
-# Salt minion configuration
-# ---------------------------------------------------------------------------
-configure_salt_minion() {
-  log "Configuring Salt minion to talk to master at ${SALT_MASTER_IP}"
+# ---------- Salt minion (LAN to master) ----------
+install_salt_minion() {
+  log "Installing Salt minion"
 
-  install -d -m0755 /etc/salt/minion.d
+  install -d -m0755 /etc/apt/keyrings
 
+  curl -fsSL https://packages.broadcom.com/artifactory/api/security/keypair/SaltProjectKey/public \
+    -o /etc/apt/keyrings/salt-archive-keyring.pgp || true
+  chmod 0644 /etc/apt/keyrings/salt-archive-keyring.pgp || true
+  gpg --dearmor </etc/apt/keyrings/salt-archive-keyring.pgp \
+    >/etc/apt/keyrings/salt-archive-keyring.gpg 2>/dev/null || true
+  chmod 0644 /etc/apt/keyrings/salt-archive-keyring.gpg || true
+
+  cat >/etc/apt/sources.list.d/salt.sources <<'EOF'
+Types: deb
+URIs: https://packages.broadcom.com/artifactory/saltproject-deb
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/salt-archive-keyring.pgp
+EOF
+
+  cat >/etc/apt/preferences.d/salt-pin-1001 <<'EOF'
+Package: salt-*
+Pin: version 3006.*
+Pin-Priority: 1001
+EOF
+
+  apt-get update -y || true
+  apt-get install -y --no-install-recommends salt-minion salt-common || true
+
+  # Master is the hub LAN IP from hub.env
+  mkdir -p /etc/salt/minion.d
   cat >/etc/salt/minion.d/master.conf <<EOF
-master: ${SALT_MASTER_IP}
-random_reauth_delay: 60
+master: ${HUB_LAN}
 ipv6: False
-id: $(hostname -f)
 EOF
 
-  # Tag this node with its role so top.sls 'role:*' matches work cleanly
-  cat >/etc/salt/minion.d/grains.conf <<EOF
+  # Grains: role + LAN/WG IPs
+  local LAN_IP WG1_ADDR WG2_ADDR WG3_ADDR
+  LAN_IP="$(ip -4 addr show scope global | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)"
+  WG1_ADDR="$(echo "${WG1_WANTED}" | cut -d/ -f1)"
+  WG2_ADDR="$(echo "${WG2_WANTED}" | cut -d/ -f1)"
+  WG3_ADDR="$(echo "${WG3_WANTED}" | cut -d/ -f1)"
+
+  cat >/etc/salt/minion.d/role.conf <<EOF
 grains:
-  role: ${ROLE}
-  domain: ${DOMAIN}
+  role: ${MY_GROUP}
+  lan_ip: ${LAN_IP}
+  wg1_ip: ${WG1_ADDR}
+  wg2_ip: ${WG2_ADDR}
+  wg3_ip: ${WG3_ADDR}
 EOF
 
+  install -d -m0755 /etc/systemd/system/salt-minion.service.d
+  cat >/etc/systemd/system/salt-minion.service.d/wg-order.conf <<'EOF'
+[Unit]
+After=wg-quick@wg1.service network-online.target
+Wants=wg-quick@wg1.service network-online.target
+EOF
+
+  systemctl daemon-reload
   systemctl enable --now salt-minion || true
 }
 
-# ---------------------------------------------------------------------------
-# Bash / tmux / vim / Python env – reuse same implementations as master
-# ---------------------------------------------------------------------------
-write_bashrc() {
-  log "Writing clean .bashrc for all users (via /etc/skel)..."
+# ---------- Metrics: node_exporter bound to wg2 ----------
+bind_node_exporter() {
+  log "Binding node_exporter to wg2 IP"
 
-  local BASHRC=/etc/skel/.bashrc
+  local WG2_ADDR
+  WG2_ADDR="$(echo "${WG2_WANTED}" | cut -d/ -f1)"
 
-  cat > "$BASHRC" <<'EOF'
-# ~/.bashrc - foundryBot minion console
-
-[ -z "$PS1" ] && return
-
-HISTSIZE=10000
-HISTFILESIZE=20000
-HISTTIMEFORMAT='%F %T '
-HISTCONTROL=ignoredups:erasedups
-
-shopt -s histappend
-shopt -s checkwinsize
-shopt -s cdspell
-
-PS1='\u@\h:\w\$ '
-
-fb_banner() {
-  cat << 'FBBANNER'
-   ___                           __                  ______          __
- /'___\                         /\ \                /\     \        /\ \__
-/\ \__/  ___   __  __    ___    \_\ \  _ __   __  __\ \ \L\ \    ___\ \ ,_\
-\ \ ,__\/ __`\/\ \/\ \ /' _ `\  /'_` \/\`'__\/\ \/\ \\ \  _ <'  / __`\ \ \/
- \ \ \_/\ \L\ \ \ \_\ \/\ \/\ \/\ \L\ \ \ \/ \ \ \_\ \\ \ \L\ \/\ \L\ \ \ \_
-  \ \_\\ \____/\ \____/\ \_\ \_\ \___,_\ \_\  \/`____ \\ \____/\ \____/\ \__\
-   \/_/ \/___/  \/___/  \/_/\/_/\/__,_ /\/_/   `/___/> \\/___/  \/___/  \/__/
-                                                  /\___/
-                                                  \/__/
-           secure cluster minion
-
-FBBANNER
-}
-
-if [ -z "$FBNOBANNER" ]; then
-  fb_banner
-  export FBNOBANNER=1
-fi
-
-if [ "$EUID" -eq 0 ]; then
-  PS1='\[\e[1;31m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
-else
-  PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
-fi
-
-if [ -f /etc/bash_completion ]; then
-  # shellcheck source=/etc/bash_completion
-  . /etc/bash_completion
-fi
-
-alias cp='cp -i'
-alias mv='mv -i'
-alias rm='rm -i'
-
-alias ls='ls --color=auto'
-alias ll='ls -alF --color=auto'
-alias la='ls -A --color=auto'
-alias l='ls -CF --color=auto'
-alias grep='grep --color=auto'
-alias e='${EDITOR:-vim}'
-alias vi='vim'
-
-alias ports='ss -tuln'
-alias df='df -h'
-alias du='du -h'
-alias tk='tmux kill-server'
-
-echo "Welcome $USER — minion $(hostname) on $(date)"
+  install -d -m755 /etc/systemd/system/prometheus-node-exporter.service.d
+  cat >/etc/systemd/system/prometheus-node-exporter.service.d/override.conf <<EOF
+[Service]
+Environment=
+ExecStart=
+ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=${WG2_ADDR}:9100 --web.disable-exporter-metrics
 EOF
 
-  # BCC auto-activation hook will be appended later from setup_python_env()
-}
-
-write_tmux_conf() {
-  log "Writing tmux.conf to /etc/skel and root"
-  apt-get install -y tmux
-
-  local TMUX_CONF="/etc/skel/.tmux.conf"
-
-  cat > "$TMUX_CONF" <<'EOF'
-# ~/.tmux.conf — Airline-style theme (minion)
-set -g mouse on
-setw -g mode-keys vi
-set -g history-limit 10000
-set -g default-terminal "screen-256color"
-set-option -ga terminal-overrides ",xterm-256color:Tc"
-set-option -g status on
-set-option -g status-interval 5
-set-option -g status-justify centre
-set-option -g status-bg colour236
-set-option -g status-fg colour250
-set-option -g status-style bold
-set-option -g status-left-length 60
-set-option -g status-left "#[fg=colour0,bg=colour83] #S #[fg=colour83,bg=colour55,nobold,nounderscore,noitalics]"
-set-option -g status-right-length 120
-set-option -g status-right "#[fg=colour55,bg=colour236]#[fg=colour250,bg=colour55] %Y-%m-%d  %H:%M #[fg=colour236,bg=colour55]#[fg=colour0,bg=colour236] #H "
-set-window-option -g window-status-current-style "fg=colour0,bg=colour83,bold"
-set-window-option -g window-status-current-format " #I:#W "
-set-window-option -g window-status-style "fg=colour250,bg=colour236"
-set-window-option -g window-status-format " #I:#W "
-set-option -g pane-border-style "fg=colour238"
-set-option -g pane-active-border-style "fg=colour83"
-set-option -g message-style "bg=colour55,fg=colour250"
-set-option -g message-command-style "bg=colour55,fg=colour250"
-set-window-option -g bell-action none
-bind | split-window -h
-bind - split-window -v
-unbind '"'
-unbind %
-bind r source-file ~/.tmux.conf \; display-message "Reloaded!"
-bind-key -T copy-mode-vi 'v' send -X begin-selection
-bind-key -T copy-mode-vi 'y' send -X copy-selection-and-cancel
+  cat >/etc/systemd/system/prometheus-node-exporter.service.d/wg-order.conf <<'EOF'
+[Unit]
+After=wg-quick@wg2.service network-online.target
+Wants=wg-quick@wg2.service network-online.target
 EOF
 
-  cp "$TMUX_CONF" /root/.tmux.conf
+  systemctl daemon-reload
+  systemctl enable --now prometheus-node-exporter || true
 }
 
-setup_vim_config() {
-  log "Writing standard Vim config (minion)..."
-  apt-get install -y \
-    vim git \
-    vim-airline vim-airline-themes \
-    vim-ctrlp vim-fugitive vim-gitgutter vim-tabular || true
+# ---------- Register with master (Prom + Ansible) ----------
+register_with_master() {
+  log "Registering minion with master via register-minion"
 
-  local VIMRC=/etc/skel/.vimrc
-  mkdir -p /etc/skel/.vim/autoload/airline/themes
-
-  cat > "$VIMRC" <<'EOF'
-syntax on
-filetype plugin indent on
-set nocompatible
-set tabstop=2 shiftwidth=2 expandtab
-set autoindent smartindent
-set background=dark
-set ruler
-set showcmd
-set cursorline
-set wildmenu
-set incsearch
-set hlsearch
-set laststatus=2
-set clipboard=unnamedplus
-set showmatch
-set backspace=indent,eol,start
-set ignorecase
-set smartcase
-set scrolloff=5
-set wildmode=longest,list,full
-set splitbelow
-set splitright
-highlight ColorColumn ctermbg=darkgrey guibg=grey
-highlight ExtraWhitespace ctermbg=red guibg=red
-match ExtraWhitespace /\s\+$/
-let g:airline_powerline_fonts = 1
-let g:airline_theme = 'custom'
-let g:airline#extensions#tabline#enabled = 1
-let g:airline_section_z = '%l:%c'
-let g:ctrlp_map = '<c-p>'
-let g:ctrlp_cmd = 'CtrlP'
-nmap <leader>gs :Gstatus<CR>
-nmap <leader>gd :Gdiff<CR>
-nmap <leader>gc :Gcommit<CR>
-nmap <leader>gb :Gblame<CR>
-let g:gitgutter_enabled = 1
-autocmd FileType python,yaml setlocal tabstop=2 shiftwidth=2 expandtab
-autocmd FileType javascript,typescript,json setlocal tabstop=2 shiftwidth=2 expandtab
-autocmd FileType sh,bash,zsh setlocal tabstop=2 shiftwidth=2 expandtab
-nnoremap <leader>w :w<CR>
-nnoremap <leader>q :q<CR>
-nnoremap <leader>tw :%s/\s\+$//e<CR>
-if &term =~ 'xterm'
-  let &t_SI = "\e[6 q"
-  let &t_EI = "\e[2 q"
-endif
-EOF
-
-  chmod 644 /etc/skel/.vimrc
-  cat >/etc/skel/.vim/autoload/airline/themes/custom.vim <<'EOF'
-let g:airline#themes#custom#palette = {}
-let s:N1 = [ '#000000' , '#00ff5f' , 0 , 83 ]
-let s:N2 = [ '#ffffff' , '#5f00af' , 255 , 55 ]
-let s:N3 = [ '#ffffff' , '#303030' , 255 , 236 ]
-let s:I1 = [ '#000000' , '#5fd7ff' , 0 , 81 ]
-let s:I2 = [ '#ffffff' , '#5f00d7' , 255 , 56 ]
-let s:I3 = [ '#ffffff' , '#303030' , 255 , 236 ]
-let s:V1 = [ '#000000' , '#af5fff' , 0 , 135 ]
-let s:V2 = [ '#ffffff' , '#8700af' , 255 , 91 ]
-let s:V3 = [ '#ffffff' , '#303030' , 255 , 236 ]
-let s:R1 = [ '#000000' , '#ff5f00' , 0 , 202 ]
-let s:R2 = [ '#ffffff' , '#d75f00' , 255 , 166 ]
-let s:R3 = [ '#ffffff' , '#303030' , 255 , 236 ]
-let s:IA = [ '#aaaaaa' , '#1c1c1c' , 250 , 234 ]
-let g:airline#themes#custom#palette.normal = airline#themes#generate_color_map(s:N1, s:N2, s:N3)
-let g:airline#themes#custom#palette.insert = airline#themes#generate_color_map(s:I1, s:I2, s:I3)
-let g:airline#themes#custom#palette.visual = airline#themes#generate_color_map(s:V1, s:V2, s:V3)
-let g:airline#themes#custom#palette.replace = airline#themes#generate_color_map(s:R1, s:R2, s:R3)
-let g:airline#themes#custom#palette.inactive = airline#themes#generate_color_map(s:IA, s:IA, s:IA)
-EOF
-
-  mkdir -p /root/.vim/autoload/airline/themes
-  cp /etc/skel/.vimrc /root/.vimrc
-  chmod 644 /root/.vimrc
-  cp /etc/skel/.vim/autoload/airline/themes/custom.vim /root/.vim/autoload/airline/themes/custom.vim
-  chmod 644 /root/.vim/autoload/airline/themes/custom.vim
-}
-
-setup_python_env() {
-  log "Setting up Python for BCC scripts (minion)..."
-
-  apt-get install -y python3-psutil python3-bpfcc || true
-
-  local VENV_DIR="/root/bccenv"
-  python3 -m venv --system-site-packages "$VENV_DIR"
-
-  # shellcheck disable=SC1091
-  source "$VENV_DIR/bin/activate"
-  pip install --upgrade pip wheel setuptools
-  pip install cryptography pyOpenSSL numba pytest
-  deactivate
-
-  log "Venv created at $VENV_DIR with system site-packages."
-
-  local ROOT_BASHRC="/root/.bashrc"
-  if ! grep -q "$VENV_DIR" "$ROOT_BASHRC" 2>/dev/null; then
-    {
-      echo ""
-      echo "# Auto-activate BCC virtualenv"
-      echo "source \"$VENV_DIR/bin/activate\""
-    } >> "$ROOT_BASHRC"
+  local ENROLL_KEY="/root/.ssh/enroll_ed25519"
+  if [[ ! -r "$ENROLL_KEY" ]]; then
+    log "Enrollment SSH key ${ENROLL_KEY} missing; skipping register-minion"
+    return 0
   fi
 
-  local SKEL_BASHRC="/etc/skel/.bashrc"
-  if ! grep -q "$VENV_DIR" "$SKEL_BASHRC" 2>/dev/null; then
-    {
-      echo ""
-      echo "# Auto-activate BCC virtualenv if available"
-      echo "[ -d \"$VENV_DIR\" ] && source \"$VENV_DIR/bin/activate\""
-    } >> "$SKEL_BASHRC"
+  local WG2_ADDR
+  WG2_ADDR="$(echo "${WG2_WANTED}" | cut -d/ -f1)"
+  local HOST_SHORT
+  HOST_SHORT="$(hostname -s)"
+
+  local SSHOPTS="-i ${ENROLL_KEY} -o LogLevel=ERROR -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=6"
+
+  if ssh $SSHOPTS "${ADMIN_USER}@${HUB_LAN}" \
+       "sudo /usr/local/sbin/register-minion '${MY_GROUP}' '${HOST_SHORT}' '${WG2_ADDR}'" 2>/dev/null; then
+    log "[OK] Registered ${HOST_SHORT} (${WG2_ADDR}) in group ${MY_GROUP}"
+    return 0
   fi
+
+  log "[WARN] Failed to register minion with master; Prom/Ansible inventories will miss this node until fixed"
 }
 
-sync_skel_to_existing_users() {
-  log "Syncing skel configs to existing users (minion)..."
-
-  local files=".bashrc .vimrc .tmux.conf"
-  local homes="/root"
-  homes+=" $(find /home -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)"
-
-  for home in $homes; do
-    for f in $files; do
-      if [ -f "/etc/skel/$f" ]; then
-        cp -f "/etc/skel/$f" "$home/$f"
-      fi
-    done
-  done
+# ---------- Optional role-specific bits ----------
+maybe_role_specific() {
+  case "${MY_GROUP}" in
+    storage)
+      log "Role=storage: installing minimal storage tooling (placeholder)"
+      apt-get install -y --no-install-recommends zfsutils-linux || true
+      modprobe zfs 2>/dev/null || true
+      ;;
+    # Other roles (k8s-cp, k8s-worker, k8s-lb, prom, graf) can be fleshed out
+    # via Salt states and/or Ansible playbooks.
+  esac
 }
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-main_minion() {
-  log "BEGIN postinstall (cluster minion, role=${ROLE})"
+main() {
+  log "BEGIN postinstall (minion)"
+  ensure_base
+  ensure_admin_user
+  install_enroll_key
+  ssh_hardening_static
+  ssh_bind_lan_and_wg1
+  read_hub
+  wg_setup_all
+  auto_enroll_with_hub
+  nft_min
+  install_salt_minion
+  bind_node_exporter
+  register_with_master
+  maybe_role_specific
 
-  ensure_base_minion
-  ensure_users_minion
-  wg_minion_setup
-  nft_minion_firewall
-  configure_salt_minion
-  write_bashrc
-  write_tmux_conf
-  setup_vim_config
-  setup_python_env
-  sync_skel_to_existing_users
-
-  # Clean out junk we don't care about
   systemctl disable --now openipmi.service 2>/dev/null || true
   systemctl mask openipmi.service 2>/dev/null || true
 
-  log "Minion ready (role=${ROLE})."
-
-  touch /root/.bootstrap_done
-  sync || true
-
+  log "Minion ready."
   systemctl disable bootstrap.service 2>/dev/null || true
   systemctl daemon-reload || true
-
   log "Powering off in 2s..."
   (sleep 2; systemctl --no-block poweroff) & disown
 }
 
-main_minion
+main
 EOS
 }
 
