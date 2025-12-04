@@ -197,7 +197,7 @@ You do **not** need:
 - Terraform
 - Packer
 - Ansible/Salt/Puppet/Chef
-- Tailscale/Netbird or other snd tools
+- Tailscale/Netbird or other software defined netwoking, it's built into the kernel at 0 second.
 - Any cloud-specific image tooling
 - Any SaaS CI/CD service
 
