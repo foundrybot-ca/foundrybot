@@ -12,7 +12,8 @@ It does **not** depend on:
 
 - Git  
 - Terraform  
-- Packer  
+- Packer
+- Tailscale/Netbird
 - Ansible/Salt/Puppet/Chef  
 - Cloud-init  
 - Any SaaS or third-party CI/CD
