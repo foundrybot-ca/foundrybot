@@ -44,7 +44,7 @@ Typical issues:
 - Your CI pipeline *requires* Git, Packer, Terraform, and a dozen other pieces just to get a basic OS running.
 - Disaster recovery assumes “the cloud will be fine” and collapses when it isn’t.
 
-**FoundryBot fixes this by rebuilding the world every time, from scratch, to a known-good release.**
+**FoundryBot fixes this by rebuilding the world every time, from scratch, to a known-good release** using battle tested methods at its core **iso9660**
 
 
 ---
