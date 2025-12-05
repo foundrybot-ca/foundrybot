@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 
+: <<'COMMENT'
+in-tune_nix.sh — Deployable linux desktops that "magically" join SCCM servers.
 
+Overview
+--------
+This script is a WIP, but in short is motivated becasue none of the "big" guys
+have "automated" this process and it sucks to manage.
+
+Motivation
+----------
+There is no "good" fully automated deployment tool to ease enrollment and managment
+problems with mixed windows/linux envrioments. 
+COMMENT
 
 set -euo pipefail
 
