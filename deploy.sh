@@ -892,7 +892,6 @@ EOF
 # =============================================================================
 # MASTER POSTINSTALL
 # =============================================================================
-
 emit_postinstall_master() {
   local out="$1"
   cat >"$out" <<'EOS'
@@ -1361,17 +1360,21 @@ pillars_and_states_seed() {
   install -d -m0755 /srv/salt/common
   install -d -m0755 /srv/salt/roles
 
-  # ---------------------------------------------------------------------------
-  # Normalise cluster layout variables (protect against set -u)
-  # ---------------------------------------------------------------------------
+  ###########################################################################
+  # VARIABLES
+  ###########################################################################
+
   : "${DOMAIN:=unixbox.net}"
+  : "${MASTER_ID:=master}"
   : "${MASTER_LAN:=10.100.10.224}"
 
+  # Load balancers
   : "${K8SLB1_NAME:=k8s-lb1}"
   : "${K8SLB1_IP:=10.100.10.213}"
   : "${K8SLB2_NAME:=k8s-lb2}"
   : "${K8SLB2_IP:=10.100.10.212}"
 
+  # Control planes
   : "${K8SCP1_NAME:=k8s-cp1}"
   : "${K8SCP1_IP:=10.100.10.219}"
   : "${K8SCP2_NAME:=k8s-cp2}"
@@ -1379,6 +1382,7 @@ pillars_and_states_seed() {
   : "${K8SCP3_NAME:=k8s-cp3}"
   : "${K8SCP3_IP:=10.100.10.217}"
 
+  # Workers
   : "${K8SW1_NAME:=k8s-w1}"
   : "${K8SW1_IP:=10.100.10.216}"
   : "${K8SW2_NAME:=k8s-w2}"
@@ -1386,31 +1390,32 @@ pillars_and_states_seed() {
   : "${K8SW3_NAME:=k8s-w3}"
   : "${K8SW3_IP:=10.100.10.214}"
 
-  # ---------------------------------------------------------------------------
-  # Pillar: top.sls
-  # ---------------------------------------------------------------------------
-  cat >/srv/pillar/top.sls <<'EOF'
+  ###########################################################################
+  # PILLAR: top.sls
+  ###########################################################################
+  cat >/srv/pillar/top.sls <<EOF
 base:
   '*':
     - cluster
+    - wireguard
 EOF
 
-  # ---------------------------------------------------------------------------
-  # Pillar: cluster layout (domain, master, and full K8s node map)
-  # ---------------------------------------------------------------------------
+  ###########################################################################
+  # PILLAR: cluster.sls
+  ###########################################################################
   cat >/srv/pillar/cluster.sls <<EOF
 cluster:
   domain: ${DOMAIN}
 
   master:
-    id: master
+    id: ${MASTER_ID}
     lan_ip: ${MASTER_LAN}
-    wg:
-      wg1: ${WG1_IP}
 
   k8s:
-    # VIP / primary LB address for API (you can change this to an actual VIP later)
     api_vip: ${K8SLB1_IP}
+    version_minor: "v1.34"
+    pod_subnet: "10.244.0.0/16"
+    service_subnet: "10.96.0.0/12"
 
     lbs:
       - name: ${K8SLB1_NAME}
@@ -1434,56 +1439,59 @@ cluster:
       - name: ${K8SW3_NAME}
         ip: ${K8SW3_IP}
 
-    # Defaults for kubeadm / CNI; your post-install (apply.py) can read/override these.
-    version_minor: "v1.34"
-    pod_subnet: "10.244.0.0/16"
-    service_subnet: "10.96.0.0/12"
+    # Filled in dynamically after CP1 init
+    token: ""
+    ca_hash: ""
 EOF
 
   log "Seeding /srv/pillar and /srv/salt tree"
 
-  # ---------------------------------------------------------------------------
-  # /srv/salt/top.sls → role-based mapping
-  # ---------------------------------------------------------------------------
+  ###########################################################################
+  # PILLAR: wireguard.sls (empty; will be populated later by generator)
+  ###########################################################################
+  cat >/srv/pillar/wireguard.sls <<'EOF'
+wireguard: {}
+EOF
+
+  ###########################################################################
+  # /srv/salt/top.sls — map nodes via grains
+  ###########################################################################
   cat >/srv/salt/top.sls <<'EOF'
 base:
-  'role:graf':
-    - match: grain
-    - roles.grafana
-
-  'role:prometheus':
-    - match: grain
-    - roles.prometheus
-
-  'role:storage':
-    - match: grain
-    - roles.storage
-
-  # Optional K8s admin/jumphost
-  'role:k8s':
-    - match: grain
-    - roles.k8s_admin
-
-  # HAProxy API load balancers
   'role:k8s-lb':
     - match: grain
     - roles.k8s_lb
 
-  # Kubernetes control plane nodes
   'role:k8s-cp':
     - match: grain
     - roles.k8s_control_plane
-    - roles.k8s_flannel
+    - roles.k8s_cp_init
 
-  # Kubernetes workers
+  'role:k8s-cp-join':
+    - match: grain
+    - roles.k8s_control_plane
+    - roles.k8s_cp_join
+
   'role:k8s-worker':
     - match: grain
     - roles.k8s_worker
+    - roles.k8s_worker_join
+
+  'role:k8s':
+    - match: grain
+    - roles.k8s_admin
+
+  'role:wg':
+    - match: grain
+    - roles.k8s_wireguard
+
+  '*':
+    - common.baseline
 EOF
 
-  # ---------------------------------------------------------------------------
-  # common/baseline.sls (basic tools)
-  # ---------------------------------------------------------------------------
+  ###########################################################################
+  # COMMON BASELINE
+  ###########################################################################
   cat >/srv/salt/common/baseline.sls <<'EOF'
 common-baseline:
   pkg.installed:
@@ -1578,9 +1586,10 @@ k8s-admin-tools:
       - cmd: k8s-admin-apt-update
 EOF
 
-  # ---------------------------------------------------------------------------
-  # roles/k8s_control_plane.sls  (K8s control-plane prerequisites)
-  # ---------------------------------------------------------------------------
+  ###########################################################################
+  # --- ALL ROLE FILES ---
+  ###########################################################################
+
   cat >/srv/salt/roles/k8s_control_plane.sls <<'EOF'
 # Kubernetes control-plane node role for Debian 13
 
@@ -2006,6 +2015,265 @@ k8s-flannel-apply:
         kubectl get daemonset -n kube-flannel kube-flannel -o jsonpath='{.status.numberReady}' 2>/dev/null \
           | grep -Eq '^[1-9]'
 EOF
+}
+
+###############################################################################
+# Seed K8s helper tools on the Salt master
+# - gen_wireguard_pillar.py: generate WireGuard keys + /srv/pillar/wireguard.sls
+# - update_k8s_join_pillar.sh: set kubeadm token + CA hash in /srv/pillar/cluster.sls
+###############################################################################
+seed_k8s_support_tools() {
+  log "Seeding K8s helper tools (WireGuard generator + join pillar updater)"
+
+  install -d -m0755 /usr/local/sbin
+  install -d -m0700 /etc/wireguard/keys
+
+  #############################################################################
+  # /usr/local/sbin/gen_wireguard_pillar.py
+  # Run on master:
+  #   gen_wireguard_pillar.py
+  #
+  # It will:
+  #   - generate private/public keys for each node (if missing)
+  #   - drop them in /etc/wireguard/keys/<node>.key/.pub
+  #   - write /srv/pillar/wireguard.sls with a "wireguard:" structure
+  #
+  # You can then have a Salt state (roles.k8s_wireguard) consume this pillar.
+  #############################################################################
+  cat >/usr/local/sbin/gen_wireguard_pillar.py <<'EOF'
+#!/usr/bin/env python3
+import os
+import subprocess
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Static map of nodes that participate in wg1 for infra/automation
+# Adjust as needed.
+# ---------------------------------------------------------------------------
+NODES = [
+    {
+        "id": "k8s-cp1.unixbox.net",
+        "name": "k8s-cp1",
+        "lan_ip": "10.100.10.219",
+        "wg_ip": "10.78.0.110/32",
+        "listen_port": 51821,
+    },
+    {
+        "id": "k8s-cp2.unixbox.net",
+        "name": "k8s-cp2",
+        "lan_ip": "10.100.10.218",
+        "wg_ip": "10.78.0.111/32",
+        "listen_port": 51822,
+    },
+    {
+        "id": "k8s-cp3.unixbox.net",
+        "name": "k8s-cp3",
+        "lan_ip": "10.100.10.217",
+        "wg_ip": "10.78.0.112/32",
+        "listen_port": 51823,
+    },
+    {
+        "id": "k8s-w1.unixbox.net",
+        "name": "k8s-w1",
+        "lan_ip": "10.100.10.216",
+        "wg_ip": "10.78.0.120/32",
+        "listen_port": 51824,
+    },
+    {
+        "id": "k8s-w2.unixbox.net",
+        "name": "k8s-w2",
+        "lan_ip": "10.100.10.215",
+        "wg_ip": "10.78.0.121/32",
+        "listen_port": 51825,
+    },
+    {
+        "id": "k8s-w3.unixbox.net",
+        "name": "k8s-w3",
+        "lan_ip": "10.100.10.214",
+        "wg_ip": "10.78.0.122/32",
+        "listen_port": 51826,
+    },
+    {
+        "id": "k8s-lb1.unixbox.net",
+        "name": "k8s-lb1",
+        "lan_ip": "10.100.10.213",
+        "wg_ip": "10.78.0.101/32",
+        "listen_port": 51827,
+    },
+    {
+        "id": "k8s-lb2.unixbox.net",
+        "name": "k8s-lb2",
+        "lan_ip": "10.100.10.212",
+        "wg_ip": "10.78.0.102/32",
+        "listen_port": 51828,
+    },
+    {
+        "id": "prometheus.unixbox.net",
+        "name": "prometheus",
+        "lan_ip": "10.100.10.223",
+        "wg_ip": "10.78.0.2/32",
+        "listen_port": 51829,
+    },
+    {
+        "id": "grafana.unixbox.net",
+        "name": "grafana",
+        "lan_ip": "10.100.10.222",
+        "wg_ip": "10.78.0.3/32",
+        "listen_port": 51830,
+    },
+    {
+        "id": "storage.unixbox.net",
+        "name": "storage",
+        "lan_ip": "10.100.10.220",
+        "wg_ip": "10.78.0.5/32",
+        "listen_port": 51831,
+    },
+]
+
+KEY_DIR = Path("/etc/wireguard/keys")
+PILLAR_PATH = Path("/srv/pillar/wireguard.sls")
+
+
+def ensure_keypair(name: str):
+    """
+    Ensure /etc/wireguard/keys/<name>.key and .pub exist.
+    Returns (private_key, public_key, private_key_path).
+    """
+    KEY_DIR.mkdir(parents=True, exist_ok=True)
+
+    priv_path = KEY_DIR / f"{name}.key"
+    pub_path = KEY_DIR / f"{name}.pub"
+
+    if not priv_path.exists():
+        priv = (
+            subprocess.check_output(["wg", "genkey"], text=True)
+            .strip()
+        )
+        priv_path.write_text(priv + "\n")
+        os.chmod(priv_path, 0o600)
+    else:
+        priv = priv_path.read_text().strip()
+
+    if not pub_path.exists():
+        proc = subprocess.run(
+            ["wg", "pubkey"],
+            input=priv + "\n",
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        pub = proc.stdout.strip()
+        pub_path.write_text(pub + "\n")
+    else:
+        pub = pub_path.read_text().strip()
+
+    return priv, pub, str(priv_path)
+
+
+def main():
+    nodes_cfg = {}
+    for n in NODES:
+        name = n["name"]
+        _, pub, priv_path = ensure_keypair(name)
+        nodes_cfg[name] = {
+            "id": n["id"],
+            "lan_ip": n["lan_ip"],
+            "wg_ip": n["wg_ip"],
+            "listen_port": n["listen_port"],
+            "endpoint": f"{n['lan_ip']}:{n['listen_port']}",
+            "public_key": pub,
+            "private_key_file": priv_path,
+        }
+
+    # Emit YAML pillar
+    lines = []
+    lines.append("wireguard:")
+    lines.append("  interface: wg1")
+    lines.append(f"  key_dir: {KEY_DIR}")
+    lines.append("  nodes:")
+    for name, cfg in sorted(nodes_cfg.items()):
+        lines.append(f"    {name}:")
+        lines.append(f"      id: {cfg['id']}")
+        lines.append(f"      lan_ip: {cfg['lan_ip']}")
+        lines.append(f"      wg_ip: {cfg['wg_ip']}")
+        lines.append(f"      listen_port: {cfg['listen_port']}")
+        lines.append(f"      endpoint: {cfg['endpoint']}")
+        lines.append(f"      public_key: {cfg['public_key']}")
+        lines.append(f"      private_key_file: {cfg['private_key_file']}")
+
+    PILLAR_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PILLAR_PATH.write_text("\n".join(lines) + "\n")
+
+    print(f"Wrote WireGuard pillar to {PILLAR_PATH}")
+    print(f"Keys are in {KEY_DIR}")
+
+
+if __name__ == "__main__":
+    main()
+EOF
+
+  chmod 0755 /usr/local/sbin/gen_wireguard_pillar.py
+
+  #############################################################################
+  # /usr/local/sbin/update_k8s_join_pillar.sh
+  #
+  # Usage (run on master after kubeadm init on k8s-cp1):
+  #
+  #   update_k8s_join_pillar.sh \
+  #     9n3unh.psofte8pbrd5ftro \
+  #     sha256:7783031a6f1624a85e0e90049fc4ca701f9fcd009f3f8626b2fb43f6f5e0583f
+  #
+  # This updates the "token" and "ca_hash" under cluster:k8s: in
+  #   /srv/pillar/cluster.sls
+  #############################################################################
+  cat >/usr/local/sbin/update_k8s_join_pillar.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+PILLAR_FILE="/srv/pillar/cluster.sls"
+
+usage() {
+  echo "Usage: $0 <kubeadm-token> <ca-hash>" >&2
+  echo "Example:" >&2
+  echo "  $0 9n3unh.psofte8pbrd5ftro sha256:7783...58f" >&2
+}
+
+if [[ $# -ne 2 ]]; then
+  usage
+  exit 1
+fi
+
+TOKEN="$1"
+CA_HASH="$2"
+
+if [[ ! -f "$PILLAR_FILE" ]]; then
+  echo "ERROR: pillar file $PILLAR_FILE does not exist" >&2
+  exit 1
+fi
+
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+
+cp "$PILLAR_FILE" "$TMP"
+
+awk -v token="$TOKEN" -v hash="$CA_HASH" '
+/^[[:space:]]*token:/ {
+  print "    token: \"" token "\""
+  next
+}
+/^[[:space:]]*ca_hash:/ {
+  print "    ca_hash: \"" hash "\""
+  next
+}
+{ print }
+' "$TMP" > "$PILLAR_FILE"
+
+echo "Updated token and ca_hash in $PILLAR_FILE"
+EOF
+
+  chmod 0755 /usr/local/sbin/update_k8s_join_pillar.sh
+
+  log "K8s support tools installed: gen_wireguard_pillar.py, update_k8s_join_pillar.sh"
 }
 
 ansible_stack() {
@@ -2447,7 +2715,7 @@ skannot() {
 }
 
 # Networking
-sknetpol() { 
+sknetpol() {
   salt -G "role:k8s_cp" cmd.run 'kubectl get networkpolicies -A -o wide'
 }
 
@@ -2549,7 +2817,7 @@ skcordon() {
 }
 
 # Security / certs / RBAC
-skrbac() { 
+skrbac() {
   salt -G "role:k8s_cp" cmd.run 'kubectl get roles,rolebindings -A -o wide'
 }
 
@@ -2628,30 +2896,6 @@ shl() {
 "  e, vi         - Open \$EDITOR (vim by default)." \
 ""
 }
-
-# === foundryBot K8s cluster helper ===
-fb_k8s_cluster() {
-  # Fail fast inside this function only
-  set -e
-
-  echo "[fb_k8s_cluster] Applying Salt highstate to monitoring/storage roles..."
-  salt -G 'role:prom'       state.highstate
-  salt -G 'role:graf'       state.highstate
-  salt -G 'role:storage'    state.highstate
-
-  echo "[fb_k8s_cluster] Applying Salt highstate to Kubernetes roles..."
-  salt -G 'role:k8s-lb'     state.highstate
-  salt -G 'role:k8s-cp'     state.highstate
-  salt -G 'role:k8s-worker' state.highstate
-
-  echo "[fb_k8s_cluster] Regenerating WireGuard peer configs from Salt minions..."
-  python3 /srv/salt/k8s/apply.py
-
-  echo "[fb_k8s_cluster] Done."
-}
-
-# Short alias so you can just type `fbkc` on the master
-alias fbkc='fb_k8s_cluster'
 
 # -------------------------------------------------------------------
 # Auto-activate BCC virtualenv (if present)
@@ -2841,7 +3085,7 @@ setup_python_env() {
 
   # Auto-activate for root
   local ROOT_BASHRC="/root/.bashrc"
-  if ! grep -q "$VENV_DIR" "$ROOT_BASHRC"; then
+  if ! grep -q "$VENV_DIR" "$ROOT_BASHRC" 2>/dev/null; then
     {
       echo ""
       echo "# Auto-activate BCC virtualenv"
@@ -2851,7 +3095,7 @@ setup_python_env() {
 
   # Auto-activate for future users
   local SKEL_BASHRC="/etc/skel/.bashrc"
-  if ! grep -q "$VENV_DIR" "$SKEL_BASHRC"; then
+  if ! grep -q "$VENV_DIR" "$SKEL_BASHRC" 2>/dev/null; then
     {
       echo ""
       echo "# Auto-activate BCC virtualenv if available"
@@ -2890,6 +3134,7 @@ main_master() {
   helper_tools
   salt_master_stack
   pillars_and_states_seed
+  seed_k8s_support_tools
   ansible_stack
   semaphore_stack
   configure_salt_master_network
@@ -2925,7 +3170,6 @@ EOS
 # =============================================================================
 # MINION POSTINSTALL
 # =============================================================================
-
 emit_postinstall_minion() {
   local out="$1"
   cat >"$out" <<'EOS'
@@ -2934,11 +3178,13 @@ set -euo pipefail
 
 LOG="/var/log/minion-postinstall.log"
 exec > >(tee -a "$LOG") 2>&1
-exec 2>&1
 trap 'echo "[X] Failed at line $LINENO" >&2' ERR
+
 log(){ echo "[INFO] $(date '+%F %T') - $*"; }
 
-# ---- Import environment from mk_iso wrapper ----
+# ---------------------------------------------------------------------------
+# Import environment seeded by mk_iso / wrapper
+# ---------------------------------------------------------------------------
 if [ -r /etc/environment.d/99-provision.conf ]; then
   # shellcheck disable=SC2046
   export $(grep -E '^[A-Z0-9_]+=' /etc/environment.d/99-provision.conf | xargs -d'\n' || true)
@@ -2948,20 +3194,22 @@ ADMIN_USER="${ADMIN_USER:-todd}"
 ALLOW_ADMIN_PASSWORD="${ALLOW_ADMIN_PASSWORD:-no}"
 MY_GROUP="${MY_GROUP:-prom}"
 
-# Per-minion WireGuard IPs (seeded by wrapper)
-WG0_WANTED="${WG0_WANTED:-10.77.0.2/32}"  # reserved; not used for services
-WG1_WANTED="${WG1_WANTED:-10.78.0.2/32}"  # Ansible / SSH plane
-WG2_WANTED="${WG2_WANTED:-10.79.0.2/32}"  # Metrics plane
-WG3_WANTED="${WG3_WANTED:-10.80.0.2/32}"  # K8s side/back plane
+# Per-minion WireGuard IPs (seeded by wrapper / mk_iso)
+WG0_WANTED="${WG0_WANTED:-10.77.0.2/32}"  # reserved plane
+WG1_WANTED="${WG1_WANTED:-10.78.0.2/32}"  # control / SSH / Salt
+WG2_WANTED="${WG2_WANTED:-10.79.0.2/32}"  # metrics plane
+WG3_WANTED="${WG3_WANTED:-10.80.0.2/32}"  # k8s side/backplane
 
-# Where hub.env may be
+# Where hub.env might live (wrapper or manual copy)
 HUB_ENV_CANDIDATES=(
   "/root/darksite/cluster-seed/hub.env"
   "/root/cluster-seed/hub.env"
   "/srv/wg/hub.env"
 )
 
-# ---------- Base OS ----------
+# =============================================================================
+# BASE OS
+# =============================================================================
 ensure_base() {
   log "Configuring APT & base OS packages"
   export DEBIAN_FRONTEND=noninteractive
@@ -2996,7 +3244,9 @@ EOF
   sysctl --system || true
 }
 
-# ---------- Admin user / SSH ----------
+# =============================================================================
+# ADMIN USER + SSH
+# =============================================================================
 ensure_admin_user() {
   log "Ensuring admin user ${ADMIN_USER}"
 
@@ -3006,6 +3256,7 @@ ensure_admin_user() {
   if ! id -u "${ADMIN_USER}" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "${ADMIN_USER}"
   fi
+
   install -d -m700 -o "${ADMIN_USER}" -g "${ADMIN_USER}" "/home/${ADMIN_USER}/.ssh"
   touch "/home/${ADMIN_USER}/.ssh/authorized_keys"
   chmod 600 "/home/${ADMIN_USER}/.ssh/authorized_keys"
@@ -3020,7 +3271,6 @@ ensure_admin_user() {
   chmod 0440 "/etc/sudoers.d/90-${ADMIN_USER}"
 }
 
-# Install the shared enrollment SSH key used to talk back to the hub
 install_enroll_key() {
   log "Installing cluster enrollment SSH key (for auto-enroll & registration)"
 
@@ -3040,8 +3290,9 @@ install_enroll_key() {
   install -m644 "$SRC_PUB" "$DST_PUB"
 }
 
-# We'll wire SSH into LAN+wg1 after wg1 exists
 ssh_hardening_static() {
+  log "Applying static SSH hardening"
+
   install -d -m755 /etc/ssh/sshd_config.d
 
   cat >/etc/ssh/sshd_config.d/99-hard.conf <<'EOF'
@@ -3076,7 +3327,6 @@ EOF
   fi
 }
 
-# Later, after wg1 is up, bind ssh explicitly to LAN + wg1 IPs
 ssh_bind_lan_and_wg1() {
   log "Configuring SSH ListenAddress for LAN + wg1"
 
@@ -3102,9 +3352,12 @@ EOF
   fi
 }
 
-# ---------- Read hub.env (from master) ----------
+# =============================================================================
+# HUB METADATA (hub.env)
+# =============================================================================
 read_hub() {
   log "Searching for hub.env"
+
   local f
   for f in "${HUB_ENV_CANDIDATES[@]}"; do
     if [ -r "$f" ]; then
@@ -3130,19 +3383,22 @@ read_hub() {
   : "${WG_ALLOWED_CIDR:?missing WG_ALLOWED_CIDR in hub.env}"
 }
 
-# ---------- WireGuard planes ----------
+# =============================================================================
+# WIREGUARD PLANES
+# =============================================================================
 wg_setup_all() {
   log "Configuring WireGuard planes on minion"
 
   install -d -m700 /etc/wireguard
   local _old_umask; _old_umask="$(umask)"
   umask 077
+
   local ifn
   for ifn in wg0 wg1 wg2 wg3; do
     [ -f "/etc/wireguard/${ifn}.key" ] || wg genkey | tee "/etc/wireguard/${ifn}.key" | wg pubkey >"/etc/wireguard/${ifn}.pub"
   done
 
-  # wg0: reserved, not used for services
+  # wg0: reserved
   cat >/etc/wireguard/wg0.conf <<EOF
 [Interface]
 Address    = ${WG0_WANTED}
@@ -3151,7 +3407,7 @@ ListenPort = 0
 MTU        = 1420
 EOF
 
-  # wg1: Ansible / SSH plane
+  # wg1: control / SSH / Salt
   cat >/etc/wireguard/wg1.conf <<EOF
 [Interface]
 Address    = ${WG1_WANTED}
@@ -3166,7 +3422,7 @@ AllowedIPs = ${HUB_WG1_NET}
 PersistentKeepalive = 25
 EOF
 
-  # wg2: Metrics plane
+  # wg2: metrics plane
   cat >/etc/wireguard/wg2.conf <<EOF
 [Interface]
 Address    = ${WG2_WANTED}
@@ -3181,7 +3437,7 @@ AllowedIPs = ${HUB_WG2_NET}
 PersistentKeepalive = 25
 EOF
 
-  # wg3: K8s side/back plane
+  # wg3: k8s side/backplane
   cat >/etc/wireguard/wg3.conf <<EOF
 [Interface]
 Address    = ${WG3_WANTED}
@@ -3255,7 +3511,9 @@ auto_enroll_with_hub() {
   fi
 }
 
-# ---------- nftables ----------
+# =============================================================================
+# NFTABLES
+# =============================================================================
 nft_min() {
   log "Installing nftables rules on minion"
 
@@ -3267,10 +3525,10 @@ table inet filter {
   chain input {
     type filter hook input priority 0; policy drop;
 
-    # Keep established traffic
+    # Established/related
     ct state { established, related } accept
 
-    # Localhost
+    # Loopback
     iif "lo" accept
 
     # ICMP
@@ -3279,10 +3537,10 @@ table inet filter {
     # SSH
     tcp dport 22 accept
 
-    # WireGuard UDP listening ports (if any)
+    # WireGuard UDP hints (ports are from hub.env)
     udp dport { ${WG1_PORT:-51821}, ${WG2_PORT:-51822}, ${WG3_PORT:-51823} } accept
 
-    # Allow any packets coming from WG subnets
+    # Any traffic from WG planes (control, metrics, k8s)
     ip saddr { 10.78.0.0/16, 10.79.0.0/16, 10.80.0.0/16 } accept
   }
 
@@ -3295,7 +3553,7 @@ table inet filter {
 
     ct state { established, related } accept
 
-    # Allow forwarding for WG subnets
+    # Allow forwarding within WG planes
     ip saddr { 10.78.0.0/16, 10.79.0.0/16, 10.80.0.0/16 } accept
     ip daddr { 10.78.0.0/16, 10.79.0.0/16, 10.80.0.0/16 } accept
   }
@@ -3305,7 +3563,9 @@ EOF
   systemctl enable --now nftables || true
 }
 
-# ---------- Salt minion (LAN to master) ----------
+# =============================================================================
+# SALT MINION
+# =============================================================================
 install_salt_minion() {
   log "Installing Salt minion"
 
@@ -3335,8 +3595,9 @@ EOF
   apt-get update -y || true
   apt-get install -y --no-install-recommends salt-minion salt-common || true
 
-  # Master is the hub LAN IP from hub.env
   mkdir -p /etc/salt/minion.d
+
+  # Master is the hub LAN IP from hub.env
   cat >/etc/salt/minion.d/master.conf <<EOF
 master: ${HUB_LAN}
 ipv6: False
@@ -3369,7 +3630,9 @@ EOF
   systemctl enable --now salt-minion || true
 }
 
-# ---------- Metrics: node_exporter bound to wg2 ----------
+# =============================================================================
+# METRICS (node_exporter on wg2)
+# =============================================================================
 bind_node_exporter() {
   log "Binding node_exporter to wg2 IP"
 
@@ -3394,7 +3657,9 @@ EOF
   systemctl enable --now prometheus-node-exporter || true
 }
 
-# ---------- Register with master (Prom + Ansible) ----------
+# =============================================================================
+# REGISTER WITH MASTER (PROM + ANSIBLE)
+# =============================================================================
 register_with_master() {
   log "Registering minion with master via register-minion"
 
@@ -3420,7 +3685,9 @@ register_with_master() {
   log "[WARN] Failed to register minion with master; Prom/Ansible inventories will miss this node until fixed"
 }
 
-# ---------- Optional role-specific bits ----------
+# =============================================================================
+# ROLE-SPECIFIC HOOKS
+# =============================================================================
 maybe_role_specific() {
   case "${MY_GROUP}" in
     storage)
@@ -3428,33 +3695,356 @@ maybe_role_specific() {
       apt-get install -y --no-install-recommends zfsutils-linux || true
       modprobe zfs 2>/dev/null || true
       ;;
-    # Other roles (k8s-cp, k8s-worker, k8s-lb, prom, graf) can be fleshed out
-    # via Salt states and/or Ansible playbooks.
+    # prom / graf / k8s-* etc. handled by Salt
   esac
 }
 
+write_bashrc() {
+  log "Writing clean .bashrc for all users (via /etc/skel)..."
+  local BASHRC=/etc/skel/.bashrc
+  cat > "$BASHRC" <<'EOF'
+# ~/.bashrc - foundryBot cluster console
+
+# If not running interactively, don't do anything
+[ -z "$PS1" ] && return
+
+# -------------------------------------------------------------------
+# History, shell options, basic prompt
+# -------------------------------------------------------------------
+HISTSIZE=10000
+HISTFILESIZE=20000
+HISTTIMEFORMAT='%F %T '
+HISTCONTROL=ignoredups:erasedups
+
+shopt -s histappend
+shopt -s checkwinsize
+shopt -s cdspell
+
+# Basic prompt (will be overridden below with colorized variant)
+PS1='\u@\h:\w\$ '
+
+# -------------------------------------------------------------------
+# Banner
+# -------------------------------------------------------------------
+fb_banner() {
+  cat << 'FBBANNER'
+   ___                           __                  ______          __
+ /'___\                         /\ \                /\     \        /\ \__
+/\ \__/  ___   __  __    ___    \_\ \  _ __   __  __\ \ \L\ \    ___\ \ ,_\
+\ \ ,__\/ __`\/\ \/\ \ /' _ `\  /'_` \/\`'__\/\ \/\ \\ \  _ <'  / __`\ \ \/
+ \ \ \_/\ \L\ \ \ \_\ \/\ \/\ \/\ \L\ \ \ \/ \ \ \_\ \\ \ \L\ \/\ \L\ \ \ \_
+  \ \_\\ \____/\ \____/\ \_\ \_\ \___,_\ \_\  \/`____ \\ \____/\ \____/\ \__\
+   \/_/ \/___/  \/___/  \/_/\/_/\/__,_ /\/_/   `/___/> \\/___/  \/___/  \/__/
+                                                  /\___/
+                                                  \/__/
+FBBANNER
+}
+
+# Only show once per interactive session
+if [ -z "$FBNOBANNER" ]; then
+  fb_banner
+  export FBNOBANNER=1
+fi
+
+# -------------------------------------------------------------------
+# Colorized prompt (root vs non-root)
+# -------------------------------------------------------------------
+if [ "$EUID" -eq 0 ]; then
+  PS1='\[\e[1;31m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+else
+  PS1='\[\e[1;32m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '
+fi
+
+# -------------------------------------------------------------------
+# Bash completion
+# -------------------------------------------------------------------
+if [ -f /etc/bash_completion ]; then
+  # shellcheck source=/etc/bash_completion
+  . /etc/bash_completion
+fi
+
+# -------------------------------------------------------------------
+# Basic quality-of-life aliases
+# -------------------------------------------------------------------
+alias cp='cp -i'
+alias mv='mv -i'
+alias rm='rm -i'
+
+alias ls='ls --color=auto'
+alias ll='ls -alF --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+alias grep='grep --color=auto'
+alias e='${EDITOR:-vim}'
+alias vi='vim'
+
+# Net & disk helpers
+alias ports='ss -tuln'
+alias df='df -h'
+alias du='du -h'
+alias tk='tmux kill-server'
+
+# -------------------------------------------------------------------
+# Auto-activate BCC virtualenv (if present)
+# -------------------------------------------------------------------
+VENV_DIR="/root/bccenv"
+if [ -d "$VENV_DIR" ] && [ -n "$PS1" ]; then
+  if [ -z "$VIRTUAL_ENV" ] || [ "$VIRTUAL_ENV" != "$VENV_DIR" ]; then
+    # shellcheck source=/dev/null
+    source "$VENV_DIR/bin/activate"
+  fi
+fi
+
+# -------------------------------------------------------------------
+# Friendly login line
+# -------------------------------------------------------------------
+echo "Welcome $USER — connected to $(hostname) on $(date)"
+echo "Type 'shl' for the foundryBot helper command list."
+EOF
+}
+
+# -----------------------------------------------------------------------------
+write_tmux_conf() {
+  log "Writing tmux.conf to /etc/skel and root"
+  apt-get install -y tmux
+
+  local TMUX_CONF="/etc/skel/.tmux.conf"
+
+  cat > "$TMUX_CONF" <<'EOF'
+# ~/.tmux.conf — Airline-style theme
+set -g mouse on
+setw -g mode-keys vi
+set -g history-limit 10000
+set -g default-terminal "screen-256color"
+set-option -ga terminal-overrides ",xterm-256color:Tc"
+set-option -g status on
+set-option -g status-interval 5
+set-option -g status-justify centre
+set-option -g status-bg colour236
+set-option -g status-fg colour250
+set-option -g status-style bold
+set-option -g status-left-length 60
+set-option -g status-left "#[fg=colour0,bg=colour83] #S #[fg=colour83,bg=colour55,nobold,nounderscore,noitalics]"
+set-option -g status-right-length 120
+set-option -g status-right "#[fg=colour55,bg=colour236]#[fg=colour250,bg=colour55] %Y-%m-%d  %H:%M #[fg=colour236,bg=colour55]#[fg=colour0,bg=colour236] #H "
+set-window-option -g window-status-current-style "fg=colour0,bg=colour83,bold"
+set-window-option -g window-status-current-format " #I:#W "
+set-window-option -g window-status-style "fg=colour250,bg=colour236"
+set-window-option -g window-status-format " #I:#W "
+set-option -g pane-border-style "fg=colour238"
+set-option -g pane-active-border-style "fg=colour83"
+set-option -g message-style "bg=colour55,fg=colour250"
+set-option -g message-command-style "bg=colour55,fg=colour250"
+set-window-option -g bell-action none
+bind | split-window -h
+bind - split-window -v
+unbind '"'
+unbind %
+bind r source-file ~/.tmux.conf \; display-message "Reloaded!"
+bind-key -T copy-mode-vi 'v' send -X begin-selection
+bind-key -T copy-mode-vi 'y' send -X copy-selection-and-cancel
+EOF
+
+  log ".tmux.conf written to /etc/skel/.tmux.conf"
+
+  # Also set for root:
+  cp "$TMUX_CONF" /root/.tmux.conf
+  log ".tmux.conf copied to /root/.tmux.conf"
+}
+
+# Backwards-compat wrapper (if anything else ever calls this name)
+seed_tmux_conf() {
+  write_tmux_conf
+}
+
+# -----------------------------------------------------------------------------
+setup_vim_config() {
+  log "Writing standard Vim config..."
+  apt-get install -y \
+    vim \
+    git \
+    vim-airline \
+    vim-airline-themes \
+    vim-ctrlp \
+    vim-fugitive \
+    vim-gitgutter \
+    vim-tabular
+
+  local VIMRC=/etc/skel/.vimrc
+  mkdir -p /etc/skel/.vim/autoload/airline/themes
+
+  cat > "$VIMRC" <<'EOF'
+syntax on
+filetype plugin indent on
+set nocompatible
+set tabstop=2 shiftwidth=2 expandtab
+set autoindent smartindent
+set background=dark
+set ruler
+set showcmd
+set cursorline
+set wildmenu
+set incsearch
+set hlsearch
+set laststatus=2
+set clipboard=unnamedplus
+set showmatch
+set backspace=indent,eol,start
+set ignorecase
+set smartcase
+set scrolloff=5
+set wildmode=longest,list,full
+set splitbelow
+set splitright
+highlight ColorColumn ctermbg=darkgrey guibg=grey
+highlight ExtraWhitespace ctermbg=red guibg=red
+match ExtraWhitespace /\s\+$/
+let g:airline_powerline_fonts = 1
+let g:airline_theme = 'custom'
+let g:airline#extensions#tabline#enabled = 1
+let g:airline_section_z = '%l:%c'
+let g:ctrlp_map = '<c-p>'
+let g:ctrlp_cmd = 'CtrlP'
+nmap <leader>gs :Gstatus<CR>
+nmap <leader>gd :Gdiff<CR>
+nmap <leader>gc :Gcommit<CR>
+nmap <leader>gb :Gblame<CR>
+let g:gitgutter_enabled = 1
+autocmd FileType python,yaml setlocal tabstop=2 shiftwidth=2 expandtab
+autocmd FileType javascript,typescript,json setlocal tabstop=2 shiftwidth=2 expandtab
+autocmd FileType sh,bash,zsh setlocal tabstop=2 shiftwidth=2 expandtab
+nnoremap <leader>w :w<CR>
+nnoremap <leader>q :q<CR>
+nnoremap <leader>tw :%s/\s\+$//e<CR>
+if &term =~ 'xterm'
+  let &t_SI = "\e[6 q"
+  let &t_EI = "\e[2 q"
+endif
+EOF
+
+  chmod 644 /etc/skel/.vimrc
+  cat > /etc/skel/.vim/autoload/airline/themes/custom.vim <<'EOF'
+let g:airline#themes#custom#palette = {}
+let s:N1 = [ '#000000' , '#00ff5f' , 0 , 83 ]
+let s:N2 = [ '#ffffff' , '#5f00af' , 255 , 55 ]
+let s:N3 = [ '#ffffff' , '#303030' , 255 , 236 ]
+let s:I1 = [ '#000000' , '#5fd7ff' , 0 , 81 ]
+let s:I2 = [ '#ffffff' , '#5f00d7' , 255 , 56 ]
+let s:I3 = [ '#ffffff' , '#303030' , 255 , 236 ]
+let s:V1 = [ '#000000' , '#af5fff' , 0 , 135 ]
+let s:V2 = [ '#ffffff' , '#8700af' , 255 , 91 ]
+let s:V3 = [ '#ffffff' , '#303030' , 255 , 236 ]
+let s:R1 = [ '#000000' , '#ff5f00' , 0 , 202 ]
+let s:R2 = [ '#ffffff' , '#d75f00' , 255 , 166 ]
+let s:R3 = [ '#ffffff' , '#303030' , 255 , 236 ]
+let s:IA = [ '#aaaaaa' , '#1c1c1c' , 250 , 234 ]
+let g:airline#themes#custom#palette.normal = airline#themes#generate_color_map(s:N1, s:N2, s:N3)
+let g:airline#themes#custom#palette.insert = airline#themes#generate_color_map(s:I1, s:I2, s:I3)
+let g:airline#themes#custom#palette.visual = airline#themes#generate_color_map(s:V1, s:V2, s:V3)
+let g:airline#themes#custom#palette.replace = airline#themes#generate_color_map(s:R1, s:R2, s:R3)
+let g:airline#themes#custom#palette.inactive = airline#themes#generate_color_map(s:IA, s:IA, s:IA)
+EOF
+
+  mkdir -p /root/.vim/autoload/airline/themes
+  cp /etc/skel/.vimrc /root/.vimrc
+  chmod 644 /root/.vimrc
+  cp /etc/skel/.vim/autoload/airline/themes/custom.vim /root/.vim/autoload/airline/themes/custom.vim
+  chmod 644 /root/.vim/autoload/airline/themes/custom.vim
+}
+
+# -----------------------------------------------------------------------------
+setup_python_env() {
+  log "Setting up Python for BCC scripts..."
+
+  # System packages only — no pip bcc!
+  apt-get install -y python3-psutil python3-bpfcc python3-venv
+
+  # Create a virtualenv that sees system site-packages
+  local VENV_DIR="/root/bccenv"
+  python3 -m venv --system-site-packages "$VENV_DIR"
+
+  source "$VENV_DIR/bin/activate"
+  pip install --upgrade pip wheel setuptools
+  pip install cryptography pyOpenSSL numba pytest
+  deactivate
+
+  log "System Python has psutil + bpfcc. Venv created at $VENV_DIR with system site-packages."
+
+  # Auto-activate for root
+  local ROOT_BASHRC="/root/.bashrc"
+  if ! grep -q "$VENV_DIR" "$ROOT_BASHRC" 2>/dev/null; then
+    {
+      echo ""
+      echo "# Auto-activate BCC virtualenv"
+      echo "source \"$VENV_DIR/bin/activate\""
+    } >> "$ROOT_BASHRC"
+  fi
+
+  # Auto-activate for future users
+  local SKEL_BASHRC="/etc/skel/.bashrc"
+  if ! grep -q "$VENV_DIR" "$SKEL_BASHRC" 2>/dev/null; then
+    {
+      echo ""
+      echo "# Auto-activate BCC virtualenv if available"
+      echo "[ -d \"$VENV_DIR\" ] && source \"$VENV_DIR/bin/activate\""
+    } >> "$SKEL_BASHRC"
+  fi
+
+  log "Virtualenv activation added to root and skel .bashrc"
+}
+
+# -----------------------------------------------------------------------------
+sync_skel_to_existing_users() {
+  log "Syncing skel configs to existing users (root + baked)..."
+
+  local files=".bashrc .vimrc .tmux.conf"
+  local homes="/root"
+  homes+=" $(find /home -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true)"
+
+  for home in $homes; do
+    for f in $files; do
+      if [ -f "/etc/skel/$f" ]; then
+        cp -f "/etc/skel/$f" "$home/$f"
+      fi
+    done
+  done
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
 main() {
   log "BEGIN postinstall (minion)"
+
   ensure_base
   ensure_admin_user
   install_enroll_key
   ssh_hardening_static
-  ssh_bind_lan_and_wg1
   read_hub
   wg_setup_all
+  ssh_bind_lan_and_wg1
   auto_enroll_with_hub
   nft_min
   install_salt_minion
   bind_node_exporter
   register_with_master
   maybe_role_specific
+  write_bashrc
+  write_tmux_conf
+  setup_vim_config
+  setup_python_env
+  sync_skel_to_existing_users
 
+  # Cleanup noisy/unneeded services
   systemctl disable --now openipmi.service 2>/dev/null || true
   systemctl mask openipmi.service 2>/dev/null || true
 
   log "Minion ready."
+
+  # Disable bootstrap.service for next boot
   systemctl disable bootstrap.service 2>/dev/null || true
   systemctl daemon-reload || true
+
   log "Powering off in 2s..."
   (sleep 2; systemctl --no-block poweroff) & disown
 }
@@ -3966,6 +4556,118 @@ aws_run_from_ami() {
     --network-interfaces "DeviceIndex=0,SubnetId=$AWS_SUBNET_ID,Groups=[$AWS_SECURITY_GROUP_ID],AssociatePublicIpAddress=${AWS_ASSOC_PUBLIC_IP}" \
     --tag-specifications "ResourceType=instance,Tags=[{Key=stack,Value=$AWS_TAG_STACK},{Key=role,Value=$AWS_RUN_ROLE}]" \
     --output table
+}
+
+# ---------------------------------------------------------------------------
+# finish_cluster: from fresh Salt master + minions to a running K8s cluster
+# ---------------------------------------------------------------------------
+finish_cluster() {
+  echo "==> Accepting all pending Salt keys"
+  salt-key -A -y
+
+  echo "==> Setting role grains on all nodes"
+  # Monitoring / infra
+  salt 'grafana.unixbox.net' grains.setval role graf
+  salt 'prometheus.unixbox.net' grains.setval role prometheus
+  salt 'storage.unixbox.net' grains.setval role storage
+
+  # K8s load balancers (HAProxy)
+  salt 'k8s-lb1.unixbox.net' grains.setval role k8s-lb
+  salt 'k8s-lb2.unixbox.net' grains.setval role k8s-lb
+
+  # K8s control planes
+  salt 'k8s-cp1.unixbox.net' grains.setval role k8s-cp
+  salt 'k8s-cp2.unixbox.net' grains.setval role k8s-cp
+  salt 'k8s-cp3.unixbox.net' grains.setval role k8s-cp
+
+  # K8s workers
+  salt 'k8s-w1.unixbox.net' grains.setval role k8s-worker
+  salt 'k8s-w2.unixbox.net' grains.setval role k8s-worker
+  salt 'k8s-w3.unixbox.net' grains.setval role k8s-worker
+
+  echo "==> Forcing grains refresh everywhere"
+  salt '*' saltutil.sync_grains
+  salt '*' saltutil.refresh_grains
+
+  echo "==> Applying common baseline to all nodes"
+  salt '*' state.apply common.baseline
+
+  echo "==> Applying K8s load balancer role (HAProxy) to LB nodes"
+  salt -G 'role:k8s-lb' state.apply roles.k8s_lb
+
+  echo "==> Applying K8s control-plane prereqs to control-plane nodes"
+  salt -G 'role:k8s-cp' state.apply roles.k8s_control_plane
+
+  echo "==> Applying K8s worker prereqs to worker nodes"
+  salt -G 'role:k8s-worker' state.apply roles.k8s_worker
+
+  echo "==> Waiting a bit for kubelet/containerd to settle"
+  sleep 10
+
+  # -------------------------------------------------------------------------
+  # kubeadm init on k8s-cp1 (single control-plane for now)
+  # -------------------------------------------------------------------------
+  echo "==> Running kubeadm init on k8s-cp1 if not already initialized"
+  salt 'k8s-cp1.unixbox.net' cmd.run '
+    if [ -f /etc/kubernetes/admin.conf ]; then
+      echo "kubeadm already initialized, skipping"
+      exit 0
+    fi
+
+    kubeadm init \
+      --apiserver-advertise-address=10.100.10.219 \
+      --control-plane-endpoint=10.100.10.213:6443 \
+      --pod-network-cidr=10.244.0.0/16
+  '
+
+  echo "==> Setting up kubeconfig and deploying Flannel CNI on k8s-cp1"
+  salt 'k8s-cp1.unixbox.net' cmd.run '
+    set -e
+    mkdir -p /root/.kube
+    if [ ! -f /root/.kube/config ]; then
+      cp /etc/kubernetes/admin.conf /root/.kube/config
+      chown root:root /root/.kube/config
+    fi
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+
+    # Flannel install is idempotent – re-apply is fine
+    kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+  '
+
+  # -------------------------------------------------------------------------
+  # Join workers to the cluster
+  # -------------------------------------------------------------------------
+  echo "==> Generating join command on k8s-cp1"
+  # NOTE: we only care about the first minion's output line
+  local JOIN_CMD
+  JOIN_CMD=$(
+    salt 'k8s-cp1.unixbox.net' cmd.run 'kubeadm token create --print-join-command' --out=txt \
+      | sed -n 's/^[^:]*:[[:space:]]*//p' \
+      | head -n1
+  )
+
+  if [ -z "${JOIN_CMD}" ]; then
+    echo "ERROR: Could not obtain kubeadm join command from k8s-cp1"
+    return 1
+  fi
+
+  echo "==> Join command: ${JOIN_CMD}"
+  echo "==> Having K8s worker nodes join the cluster"
+  salt -G 'role:k8s-worker' cmd.run "${JOIN_CMD}" || true
+
+  # OPTIONAL: You can also have cp2/cp3 join as workers for now, until we add real
+  # multi-control-plane wiring. Uncomment if you want that behaviour:
+  # echo "==> Having k8s-cp2 and k8s-cp3 join as workers (optional)"
+  # salt 'k8s-cp2.unixbox.net,k8s-cp3.unixbox.net' cmd.run "${JOIN_CMD}" || true
+
+  echo "==> Waiting 30s for nodes to register"
+  sleep 30
+
+  echo "==> Cluster nodes from k8s-cp1:"
+  salt 'k8s-cp1.unixbox.net' cmd.run '
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+    kubectl get nodes -o wide
+  '
 }
 
 # =============================================================================
