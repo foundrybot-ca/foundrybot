@@ -3123,6 +3123,217 @@ sync_skel_to_existing_users() {
   done
 }
 
+  log "Seeding finish-cluster script and systemd unit on Salt master"
+
+  # -------------------------------------------------------------------------
+  # /usr/local/sbin/finish-cluster: full cluster bring-up via Salt + kubeadm
+  # -------------------------------------------------------------------------
+  cat >/usr/local/sbin/finish-cluster <<'EOF_FINISH_CLUSTER'
+#!/usr/bin/env bash
+set -euo pipefail
+
+log() {
+  echo "[finish-cluster] $*"
+}
+
+# ---------------------------------------------------------------------------
+# Expected minions (these IDs must match your Salt minion IDs exactly)
+# ---------------------------------------------------------------------------
+NODES=(
+  grafana.unixbox.net
+  prometheus.unixbox.net
+  storage.unixbox.net
+  k8s-lb1.unixbox.net
+  k8s-lb2.unixbox.net
+  k8s-cp1.unixbox.net
+  k8s-cp2.unixbox.net
+  k8s-cp3.unixbox.net
+  k8s-w1.unixbox.net
+  k8s-w2.unixbox.net
+  k8s-w3.unixbox.net
+)
+
+# ---------------------------------------------------------------------------
+# 1) Wait for all minion keys to exist, then accept them
+# ---------------------------------------------------------------------------
+log "Waiting for all minion keys to appear in salt-key -L"
+
+for attempt in $(seq 1 60); do
+  KEYS="$(salt-key -L --out=txt 2>/dev/null || true)"
+
+  missing=0
+  for id in "${NODES[@]}"; do
+    if ! grep -q "$id" <<<"$KEYS"; then
+      missing=1
+      log "  -> still waiting for key: $id"
+    fi
+  done
+
+  if [ "$missing" -eq 0 ]; then
+    log "All expected minion keys present"
+    break
+  fi
+
+  log "Not all keys present yet (attempt $attempt), retrying in 5s..."
+  sleep 5
+done
+
+log "Accepting all pending Salt keys"
+salt-key -A -y || log "salt-key -A -y returned non-zero (may already be accepted)"
+
+# ---------------------------------------------------------------------------
+# 2) Assign role grains to each node
+# ---------------------------------------------------------------------------
+log "Setting role grains on all nodes"
+
+# Monitoring / infra
+salt 'grafana.unixbox.net' grains.setval role graf       || true
+salt 'prometheus.unixbox.net' grains.setval role prometheus || true
+salt 'storage.unixbox.net' grains.setval role storage    || true
+
+# K8s load balancers (HAProxy)
+salt 'k8s-lb1.unixbox.net' grains.setval role k8s-lb || true
+salt 'k8s-lb2.unixbox.net' grains.setval role k8s-lb || true
+
+# K8s control planes
+salt 'k8s-cp1.unixbox.net' grains.setval role k8s-cp || true
+salt 'k8s-cp2.unixbox.net' grains.setval role k8s-cp || true
+salt 'k8s-cp3.unixbox.net' grains.setval role k8s-cp || true
+
+# K8s workers
+salt 'k8s-w1.unixbox.net' grains.setval role k8s-worker || true
+salt 'k8s-w2.unixbox.net' grains.setval role k8s-worker || true
+salt 'k8s-w3.unixbox.net' grains.setval role k8s-worker || true
+
+log "Refreshing grains everywhere"
+salt '*' saltutil.sync_grains || true
+salt '*' saltutil.refresh_grains || true
+
+# ---------------------------------------------------------------------------
+# 3) Apply baseline + role states
+# ---------------------------------------------------------------------------
+log "Applying common baseline to all nodes"
+salt '*' state.apply common.baseline || true
+
+log "Applying K8s load balancer role to LB nodes"
+salt -G 'role:k8s-lb' state.apply roles.k8s_lb || true
+
+log "Applying K8s control-plane prereqs to control-plane nodes"
+salt -G 'role:k8s-cp' state.apply roles.k8s_control_plane || true
+
+log "Applying K8s worker prereqs to worker nodes"
+salt -G 'role:k8s-worker' state.apply roles.k8s_worker || true
+
+log "Sleeping 10s to let containerd/kubelet settle"
+sleep 10
+
+# ---------------------------------------------------------------------------
+# 4) kubeadm init on k8s-cp1
+# ---------------------------------------------------------------------------
+log "Running kubeadm init on k8s-cp1 if not already initialized"
+
+salt 'k8s-cp1.unixbox.net' cmd.run '
+  set -e
+  if [ -f /etc/kubernetes/admin.conf ]; then
+    echo "kubeadm already initialized, skipping"
+    exit 0
+  fi
+
+  kubeadm init \
+    --apiserver-advertise-address=10.100.10.219 \
+    --control-plane-endpoint=10.100.10.213:6443 \
+    --pod-network-cidr=10.244.0.0/16
+' || {
+  log "ERROR: kubeadm init on k8s-cp1 failed"
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# 5) Configure kubectl + deploy Flannel on k8s-cp1
+# ---------------------------------------------------------------------------
+log "Setting up kubeconfig and deploying Flannel CNI on k8s-cp1"
+
+salt 'k8s-cp1.unixbox.net' cmd.run '
+  set -e
+  mkdir -p /root/.kube
+  if [ ! -f /root/.kube/config ]; then
+    cp /etc/kubernetes/admin.conf /root/.kube/config
+    chown root:root /root/.kube/config
+  fi
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+  kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+' || {
+  log "ERROR: Flannel deployment failed on k8s-cp1"
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# 6) Generate join command and join all workers
+# ---------------------------------------------------------------------------
+log "Generating kubeadm join command on k8s-cp1"
+
+JOIN_CMD="$(
+  salt 'k8s-cp1.unixbox.net' cmd.run 'kubeadm token create --print-join-command' --out=txt \
+    | sed -n 's/^[^:]*:[[:space:]]*//p' \
+    | head -n1
+)"
+
+if [ -z "$JOIN_CMD" ]; then
+  log "ERROR: Could not obtain kubeadm join command from k8s-cp1"
+  exit 1
+fi
+
+log "Join command: $JOIN_CMD"
+
+log "Having K8s worker nodes join the cluster"
+salt -G 'role:k8s-worker' cmd.run "$JOIN_CMD" || true
+
+# Optional: join cp2/cp3 as workers for now (commented out)
+# log "Having k8s-cp2 and k8s-cp3 join as workers (optional)"
+# salt 'k8s-cp2.unixbox.net,k8s-cp3.unixbox.net' cmd.run "$JOIN_CMD" || true
+
+log "Waiting 30s for nodes to register with the API server"
+sleep 30
+
+log "Cluster nodes from k8s-cp1:"
+salt 'k8s-cp1.unixbox.net' cmd.run '
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+  kubectl get nodes -o wide
+' || true
+
+log "finish-cluster completed"
+EOF_FINISH_CLUSTER
+
+  chmod +x /usr/local/sbin/finish-cluster
+
+  # -------------------------------------------------------------------------
+  # Systemd unit to run finish-cluster once on first boot
+  # -------------------------------------------------------------------------
+  cat >/etc/systemd/system/finish-cluster.service <<'EOF_FINISH_CLUSTER_UNIT'
+[Unit]
+Description=Finalize K8s cluster via Salt and kubeadm
+After=network-online.target salt-master.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/finish-cluster
+
+[Install]
+WantedBy=multi-user.target
+EOF_FINISH_CLUSTER_UNIT
+
+  systemctl daemon-reload || true
+  systemctl enable finish-cluster.service || true
+
+  # Convenience alias for interactive root shells
+  if ! grep -q 'finish-cluster' /root/.bashrc 2>/dev/null; then
+    echo "alias finish-cluster='/usr/local/sbin/finish-cluster'" >> /root/.bashrc
+  fi
+
+  log "Salt master stack (including finish-cluster) seeded"
+}
+
 main_master() {
   log "BEGIN postinstall (master control hub)"
 
@@ -4279,8 +4490,27 @@ proxmox_k8s_ha() {
 
   pmx_guest_exec "$MASTER_ID" /bin/bash -lc "rm -f /srv/wg/ENROLL_ENABLED" || true
 
+  # ---------------------------------------------------------------------------
+  # After all K8s VMs are built: wait for Salt master and run finish-cluster
+  # ---------------------------------------------------------------------------
+  log "==> Waiting for Salt master (10.100.10.224) SSH to come up"
+
+  # Simple wait-for-ssh loop; adjust key options to match your environment
+  while ! ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@10.100.10.224 'echo ok' 2>/dev/null; do
+    log "   Salt master not ready yet, retrying in 5s..."
+    sleep 5
+  done
+
+  log "==> Salt master reachable, running finish-cluster remotely"
+  ssh -o StrictHostKeyChecking=no root@10.100.10.224 /usr/local/sbin/finish-cluster || {
+    log "ERROR: finish-cluster failed on Salt master"
+    return 1
+  }
+
   log "K8s node VMs deployed (LBs/CPs/workers) via unified minion pipeline."
-  log "⚠ Note: this script only provisions OS + WG + Salt/etc. K8s kubeadm bootstrap can be layered on in a follow-up step."
+  log "Note: this script only provisions OS + WG + Salt/etc. K8s kubeadm bootstrap can be layered on in a follow-up step."
+  log "==> K8s cluster bootstrap via Salt + kubeadm is complete"
+
 }
 
 proxmox_all() {
@@ -4556,118 +4786,6 @@ aws_run_from_ami() {
     --network-interfaces "DeviceIndex=0,SubnetId=$AWS_SUBNET_ID,Groups=[$AWS_SECURITY_GROUP_ID],AssociatePublicIpAddress=${AWS_ASSOC_PUBLIC_IP}" \
     --tag-specifications "ResourceType=instance,Tags=[{Key=stack,Value=$AWS_TAG_STACK},{Key=role,Value=$AWS_RUN_ROLE}]" \
     --output table
-}
-
-# ---------------------------------------------------------------------------
-# finish_cluster: from fresh Salt master + minions to a running K8s cluster
-# ---------------------------------------------------------------------------
-finish_cluster() {
-  echo "==> Accepting all pending Salt keys"
-  salt-key -A -y
-
-  echo "==> Setting role grains on all nodes"
-  # Monitoring / infra
-  salt 'grafana.unixbox.net' grains.setval role graf
-  salt 'prometheus.unixbox.net' grains.setval role prometheus
-  salt 'storage.unixbox.net' grains.setval role storage
-
-  # K8s load balancers (HAProxy)
-  salt 'k8s-lb1.unixbox.net' grains.setval role k8s-lb
-  salt 'k8s-lb2.unixbox.net' grains.setval role k8s-lb
-
-  # K8s control planes
-  salt 'k8s-cp1.unixbox.net' grains.setval role k8s-cp
-  salt 'k8s-cp2.unixbox.net' grains.setval role k8s-cp
-  salt 'k8s-cp3.unixbox.net' grains.setval role k8s-cp
-
-  # K8s workers
-  salt 'k8s-w1.unixbox.net' grains.setval role k8s-worker
-  salt 'k8s-w2.unixbox.net' grains.setval role k8s-worker
-  salt 'k8s-w3.unixbox.net' grains.setval role k8s-worker
-
-  echo "==> Forcing grains refresh everywhere"
-  salt '*' saltutil.sync_grains
-  salt '*' saltutil.refresh_grains
-
-  echo "==> Applying common baseline to all nodes"
-  salt '*' state.apply common.baseline
-
-  echo "==> Applying K8s load balancer role (HAProxy) to LB nodes"
-  salt -G 'role:k8s-lb' state.apply roles.k8s_lb
-
-  echo "==> Applying K8s control-plane prereqs to control-plane nodes"
-  salt -G 'role:k8s-cp' state.apply roles.k8s_control_plane
-
-  echo "==> Applying K8s worker prereqs to worker nodes"
-  salt -G 'role:k8s-worker' state.apply roles.k8s_worker
-
-  echo "==> Waiting a bit for kubelet/containerd to settle"
-  sleep 10
-
-  # -------------------------------------------------------------------------
-  # kubeadm init on k8s-cp1 (single control-plane for now)
-  # -------------------------------------------------------------------------
-  echo "==> Running kubeadm init on k8s-cp1 if not already initialized"
-  salt 'k8s-cp1.unixbox.net' cmd.run '
-    if [ -f /etc/kubernetes/admin.conf ]; then
-      echo "kubeadm already initialized, skipping"
-      exit 0
-    fi
-
-    kubeadm init \
-      --apiserver-advertise-address=10.100.10.219 \
-      --control-plane-endpoint=10.100.10.213:6443 \
-      --pod-network-cidr=10.244.0.0/16
-  '
-
-  echo "==> Setting up kubeconfig and deploying Flannel CNI on k8s-cp1"
-  salt 'k8s-cp1.unixbox.net' cmd.run '
-    set -e
-    mkdir -p /root/.kube
-    if [ ! -f /root/.kube/config ]; then
-      cp /etc/kubernetes/admin.conf /root/.kube/config
-      chown root:root /root/.kube/config
-    fi
-    export KUBECONFIG=/etc/kubernetes/admin.conf
-
-    # Flannel install is idempotent – re-apply is fine
-    kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
-  '
-
-  # -------------------------------------------------------------------------
-  # Join workers to the cluster
-  # -------------------------------------------------------------------------
-  echo "==> Generating join command on k8s-cp1"
-  # NOTE: we only care about the first minion's output line
-  local JOIN_CMD
-  JOIN_CMD=$(
-    salt 'k8s-cp1.unixbox.net' cmd.run 'kubeadm token create --print-join-command' --out=txt \
-      | sed -n 's/^[^:]*:[[:space:]]*//p' \
-      | head -n1
-  )
-
-  if [ -z "${JOIN_CMD}" ]; then
-    echo "ERROR: Could not obtain kubeadm join command from k8s-cp1"
-    return 1
-  fi
-
-  echo "==> Join command: ${JOIN_CMD}"
-  echo "==> Having K8s worker nodes join the cluster"
-  salt -G 'role:k8s-worker' cmd.run "${JOIN_CMD}" || true
-
-  # OPTIONAL: You can also have cp2/cp3 join as workers for now, until we add real
-  # multi-control-plane wiring. Uncomment if you want that behaviour:
-  # echo "==> Having k8s-cp2 and k8s-cp3 join as workers (optional)"
-  # salt 'k8s-cp2.unixbox.net,k8s-cp3.unixbox.net' cmd.run "${JOIN_CMD}" || true
-
-  echo "==> Waiting 30s for nodes to register"
-  sleep 30
-
-  echo "==> Cluster nodes from k8s-cp1:"
-  salt 'k8s-cp1.unixbox.net' cmd.run '
-    export KUBECONFIG=/etc/kubernetes/admin.conf
-    kubectl get nodes -o wide
-  '
 }
 
 # =============================================================================
