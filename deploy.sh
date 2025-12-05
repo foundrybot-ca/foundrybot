@@ -2629,6 +2629,30 @@ shl() {
 ""
 }
 
+# === foundryBot K8s cluster helper ===
+fb_k8s_cluster() {
+  # Fail fast inside this function only
+  set -e
+
+  echo "[fb_k8s_cluster] Applying Salt highstate to monitoring/storage roles..."
+  salt -G 'role:prom'       state.highstate
+  salt -G 'role:graf'       state.highstate
+  salt -G 'role:storage'    state.highstate
+
+  echo "[fb_k8s_cluster] Applying Salt highstate to Kubernetes roles..."
+  salt -G 'role:k8s-lb'     state.highstate
+  salt -G 'role:k8s-cp'     state.highstate
+  salt -G 'role:k8s-worker' state.highstate
+
+  echo "[fb_k8s_cluster] Regenerating WireGuard peer configs from Salt minions..."
+  python3 /srv/salt/k8s/apply.py
+
+  echo "[fb_k8s_cluster] Done."
+}
+
+# Short alias so you can just type `fbkc` on the master
+alias fbkc='fb_k8s_cluster'
+
 # -------------------------------------------------------------------
 # Auto-activate BCC virtualenv (if present)
 # -------------------------------------------------------------------
