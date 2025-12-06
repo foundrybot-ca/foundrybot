@@ -27,7 +27,7 @@ FINAL_ISO="/root/clone.iso"
 # Cluster target
 INPUT="${INPUT:-1}"           # 1|fiend, 2|dragon, 3|lion
 VMID="${VMID:-4003}"
-VMNAME="${VMNAME:-semaphore}"      # short base name; domain added below
+VMNAME="${VMNAME:-workstation}"      # short base name; domain added below
 
 # Domain
 DOMAIN="${DOMAIN:-unixbox.net}"
@@ -39,7 +39,7 @@ VM_STORAGE="${VM_STORAGE:-local-zfs}"           # e.g., ceph RBD storage ID
 ISO_STORAGE="${ISO_STORAGE:-local}"        # dir storage for ISO
 
 # Disk / CPU / RAM
-DISK_SIZE_GB="${DISK_SIZE_GB:-32}"
+DISK_SIZE_GB="${DISK_SIZE_GB:-15}"
 MEMORY_MB="${MEMORY_MB:-4096}"
 CORES="${CORES:-4}"
 
@@ -51,11 +51,11 @@ GATEWAY="${GATEWAY:-10.100.10.1}"
 NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3 1.1.1.1}"
 
 # Cloud-Init toggle for clones
-USE_CLOUD_INIT="${USE_CLOUD_INIT:-false}"
+USE_CLOUD_INIT="${USE_CLOUD_INIT:-true}"
 CLONE_VLAN_ID="${CLONE_VLAN_ID:-}"
 
 # Clone fanout
-NUM_CLONES="${NUM_CLONES:-0}"
+NUM_CLONES="${NUM_CLONES:-4}"
 BASE_CLONE_VMID="${BASE_CLONE_VMID:-3000}"
 BASE_CLONE_IP="${BASE_CLONE_IP:-$STATIC_IP}"
 CLONE_MEMORY_MB="${CLONE_MEMORY_MB:-4096}"
@@ -67,7 +67,7 @@ EXTRA_DISK_SIZE_GB="${EXTRA_DISK_SIZE_GB:-10}"
 EXTRA_DISK_TARGET="${EXTRA_DISK_TARGET:-}"
 
 # Install Profile: server | gnome-min | gnome-full | xfce-min | kde-min
-INSTALL_PROFILE="${INSTALL_PROFILE:-server}"
+INSTALL_PROFILE="${INSTALL_PROFILE:-gnome-min}"
 
 # Optional extra scripts into ISO
 SCRIPTS_DIR="${SCRIPTS_DIR:-/root/custom-scripts}"
@@ -143,7 +143,7 @@ log "Starting postinstall setup..."
 # Configuration
 # ------------------------------------------------------------------------------
 USERS=(
-  "todd:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHV51Eelt8PwYreHhJJ4JJP3OMwrXswUShblYY10J+A/ todd@onyx"
+  "todd:ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINgqdaF+C41xwLS41+dOTnpsrDTPkAwo4Zejn4tb0lOt todd@onyx.unixbox.net"
 )
 
 ALLOW_USERS=""
@@ -599,7 +599,7 @@ xorriso -as mkisofs \
   -b isolinux/isolinux.bin \
   -c isolinux/boot.cat \
   -no-emul-boot -boot-load-size 4 -boot-info-table \
-  -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+  -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
   -eltorito-alt-boot \
   -e boot/grub/efi.img \
   -no-emul-boot -isohybrid-gpt-basdat \
