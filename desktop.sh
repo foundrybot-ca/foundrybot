@@ -4,9 +4,8 @@
 
 desktop.sh
 
-creates & spray gnome desktops with built in xrdp.
-or
-upload to a remote site and deploy with cron.
+this script create a gnome desktop template and deploys any number of xrdp ready cloud init clones
+simply upload to a remote host and add a crontab, and presto.
 
 COMMENT
 
