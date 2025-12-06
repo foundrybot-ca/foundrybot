@@ -22,8 +22,8 @@ You only need **Bash** and a few standard tools. FoundryBot will happily integra
 
 ## Requirements
 
-1 "build" computer, where the script is executed FROM
-1 "TARGET" server, hardware or hypervisor, appliance or cloud
+- a "build" computer, where the script is executed FROM (hw/vm/wsl)
+- and a "TARGET" server, hardware/hypervisor/cloud or image output only
 
 ## How to?
 
