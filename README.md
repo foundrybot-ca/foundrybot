@@ -8,7 +8,7 @@ A **minimal, self-contained OS foundry**:
 - It **produces images for any target** (clouds, hypervisors, bare metal, PXE).
 - It can optionally **capture everything into a fully self-contained “darksite” bundle** that lets you rebuild years later with **zero external dependencies**.
 
-It does **not** depend on **ANY** of these tools, but at the same works seemelessly **WITH ALL OF THEM**
+It does **not** depend on **ANY** 3rd party tools, but at the same works seemelessly **WITH ALL OF THEM**
 
 - Git  
 - Terraform  
@@ -20,6 +20,18 @@ It does **not** depend on **ANY** of these tools, but at the same works seemeles
 
 You only need **Bash** and a few standard tools. FoundryBot will happily integrate *with* your existing stack, but it does **not require** any of it.
 
+## Requirements
+
+1 "build" computer, where the script is executed FROM
+1 "TARGET" server, hardware or hypervisor, appliance or cloud
+
+## How to?
+
+#1 download proxmox and install as the "TARGET"
+#2 git clone onto your "BUILD" instance
+#3 ssh-copy-id root -> "TARGET"
+#4 modify the script defaults, make sure to select your "TARGET"
+#5 ./deploy.sh
 
 ---
 
