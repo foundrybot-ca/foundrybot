@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+
+: <<'COMMENT'
+
+desktop.sh
+
+creates & spray gnome desktops with built in xrdp.
+or
+upload to a remote site and deploy with cron.
+
+COMMENT
+
 set -euo pipefail
 
 LOG_FILE="/root/install.txt"
