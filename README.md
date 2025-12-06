@@ -27,11 +27,18 @@ You only need **Bash** and a few standard tools. FoundryBot will happily integra
 
 ## How to?
 
-#1 download proxmox and install as the "TARGET"
-#2 git clone onto your "BUILD" instance
-#3 ssh-copy-id root -> "TARGET"
-#4 modify the script defaults, make sure to select your "TARGET"
-#5 ./deploy.sh
+-  download proxmox and install as the "TARGET"
+-  git clone onto your "BUILD" instance
+-  sh-copy-id root -> "TARGET"
+-  modify the script defaults, make sure to select your "TARGET"
+-  ./deploy.sh
+
+scripts:
+-  deploy.sh, deploys an ENTIRE kubernetes NODE, with 12 premade minions
+-  desktop.sh, creates custom gnome desktops
+-  clone.sh, no-touch creates a proxmox template, and as many clones as you like
+-  apply.py, applies standard salt-stack to the deploy.sh
+-  build.sh, darksite build and deploy tool
 
 ---
 
