@@ -166,7 +166,8 @@ esac
 
 # ISO_ORIG: source Debian ISO used to build custom images.
 #   Typical: netinst or DVD ISO path on the build host.
-ISO_ORIG="${ISO_ORIG:-/root/debian-13.1.0-amd64-netinst.iso}"
+#ISO_ORIG="${ISO_ORIG:-/root/debian-13.1.0-amd64-netinst.iso}"
+ISO_ORIG="${ISO_ORIG:-/root/debian-13.2.0-amd64-netinst.iso}"
 
 # ISO_STORAGE: Proxmox storage ID for ISO upload.
 #   Examples: local, local-zfs, iso-store
