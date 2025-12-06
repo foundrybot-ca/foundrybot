@@ -3333,7 +3333,6 @@ EOF_FINISH_CLUSTER_UNIT
   fi
 
   log "Salt master stack (including finish-cluster) seeded"
-}
 
 main_master() {
   log "BEGIN postinstall (master control hub)"
