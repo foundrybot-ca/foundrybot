@@ -4,8 +4,8 @@
 
 desktop.sh
 
-this script create a gnome desktop template and deploys any number of xrdp ready cloud init clones
-simply upload to a remote host and add a crontab, and presto.
+this script creates a gnome desktop template and deploys any # of xrdp ready cloud init clones
+simply upload to a remote host, +1 cron tab and presto, instant remote desktop farm
 
 COMMENT
 
@@ -197,10 +197,10 @@ install_base_packages() {
   apt-get install -y --no-install-recommends \
     dbus polkitd pkexec \
     curl wget ca-certificates gnupg lsb-release unzip \
-    net-tools traceroute tcpdump sysstat strace lsof ltrace \
-    rsync rsyslog cron chrony sudo git ethtool jq \
+    net-tools sysstat strace lsof ltrace \
+    rsync rsyslog cron chrony sudo git jq \
     qemu-guest-agent openssh-server \
-    ngrep nmap cloud-init \
+    cloud-init \
     xwayland gdm3 gnome-session gnome-terminal gnome-settings-daemon \
     gnome-control-center firefox-esr nautilus gnome-tweaks \
     gtk2-engines-murrine gtk2-engines-pixbuf dbus-user-session \
