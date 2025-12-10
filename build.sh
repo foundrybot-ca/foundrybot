@@ -42,7 +42,7 @@ UNIVERSAL_QCOW2="${UNIVERSAL_QCOW2:-$BUILD_ROOT/universal.qcow2}"
 UNIVERSAL_RAW="${UNIVERSAL_RAW:-$BUILD_ROOT/universal.raw}"
 
 # ISO input/output
-ISO_ORIG="${ISO_ORIG:-/root/debian-13.1.0-amd64-netinst.iso}"
+ISO_ORIG="${ISO_ORIG:-/root/debian-13.2.0-amd64-netinst.iso}"
 ISO_STORAGE="${ISO_STORAGE:-local}"
 VM_STORAGE="${VM_STORAGE:-local-zfs}"
 ROOT_SCHEME="${ROOT_SCHEME:-zfs}"

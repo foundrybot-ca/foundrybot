@@ -149,6 +149,15 @@ log() { echo "[INFO] $(date '+%F %T') — $*"; }
 
 log "Starting postinstall setup..."
 
+wait_for_dpkg() {
+  log "Waiting for dpkg/apt locks to clear..."
+  while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+     || fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+     || fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+    sleep 5
+  done
+}
+
 # ------------------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------------------
@@ -166,6 +175,8 @@ ALLOW_USERS="${ALLOW_USERS%% }"
 # ------------------------------------------------------------------------------
 # Functions
 # ------------------------------------------------------------------------------
+log "Stopping apt-daily timers..."
+systemctl stop apt-daily.service apt-daily-upgrade.service apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 
 update_and_upgrade() {
   log "Updating APT sources to trixie..."
@@ -175,6 +186,7 @@ deb http://security.debian.org/debian-security trixie-security main contrib non-
 deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
 EOF
 
+  wait_for_dpkg
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   apt-get -y upgrade
@@ -312,8 +324,8 @@ log "Writing bootstrap.service..."
 cat > "$DARKSITE_DIR/bootstrap.service" <<'EOF'
 [Unit]
 Description=Initial Bootstrap Script (One-time)
-After=network.target
-Wants=network.target
+After=network-online.target apt-daily.service apt-daily-upgrade.service
+Wants=network-online.target
 ConditionPathExists=/root/darksite/postinstall.sh
 
 [Service]
@@ -321,8 +333,6 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/bash -lc '/root/darksite/postinstall.sh'
 TimeoutStartSec=0
-#StandardOutput=journal+console
-#StandardError=journal+console
 KillMode=process
 
 [Install]

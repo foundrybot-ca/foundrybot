@@ -15,8 +15,9 @@ die()       { error_log "$*"; exit 1; }
 # =============================================================================
 
 # --- ISO source (Debian 13.x) ---
-ISO_ORIG="${ISO_ORIG:-/root/debian-13.1.0-amd64-netinst.iso}"
-# ISO_ORIG="${ISO_ORIG:-/root/debian-13.0.0-amd64-DVD-1.iso}"
+# ISO_ORIG="${ISO_ORIG:-/root/debian-13.2.0-amd64-netinst.iso}"
+# ISO_ORIG="${ISO_ORIG:-/root/debian-13.2.0-amd64-netinst.iso}"
+ISO_ORIG="${ISO_ORIG:-/root/debian-13.2.0-amd64-DVD-1.iso}"
 
 # Build workspace
 BUILD_DIR="${BUILD_DIR:-/root/build}"
@@ -30,13 +31,13 @@ FINAL_ISO="${FINAL_ISO:-/root/clone.iso}"
 # Cluster target (Proxmox host selector)
 INPUT="${INPUT:-1}"   # 1|fiend, 2|dragon, 3|lion
 VMID="${VMID:-7100}"
-VMNAME="${VMNAME:-server}"      # short base name; domain added below
+VMNAME="${VMNAME:-desktop}"      # short base name; domain added below
 
 # Domain
 DOMAIN="${DOMAIN:-foundrybot.ca}"
 
 # Storage
-VM_STORAGE="${VM_STORAGE:-void}"   # (ceph->void (nvme->local-zfs (rust>fireball
+VM_STORAGE="${VM_STORAGE:-local-zfs}"   # (ceph->oid (nvme->local-zfs (rust>fireball
 ISO_STORAGE="${ISO_STORAGE:-local}"     # dir storage for ISO (usually 'local')
 
 # VM sizing
@@ -69,7 +70,7 @@ EXTRA_DISK_SIZE_GB="${EXTRA_DISK_SIZE_GB:-10}"
 EXTRA_DISK_TARGET="${EXTRA_DISK_TARGET:-fireball}"  # storage name for extra disks
 
 # Install Profile: server | gnome-min | gnome-full | xfce-min | kde-min
-INSTALL_PROFILE="${INSTALL_PROFILE:-server}"
+INSTALL_PROFILE="${INSTALL_PROFILE:-gnome-min}"
 
 # Optional extra scripts into ISO
 SCRIPTS_DIR="${SCRIPTS_DIR:-/root/custom-scripts}"
@@ -992,7 +993,7 @@ xorriso -as mkisofs \
   -b isolinux/isolinux.bin \
   -c isolinux/boot.cat \
   -no-emul-boot -boot-load-size 4 -boot-info-table \
-  -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin \
+  -isohybrid-mbr /usr/share/syslinux/isohdpfx.bin \
   -eltorito-alt-boot \
   -e boot/grub/efi.img \
   -no-emul-boot -isohybrid-gpt-basdat \
@@ -1011,7 +1012,7 @@ FINAL_ISO_BASENAME="$(basename "$FINAL_ISO")"
 log "Creating VM $VMID on $PROXMOX_HOST..."
 ssh $SSH_OPTS root@"$PROXMOX_HOST" \
   VMID="$VMID" VMNAME="$BASE_VMNAME" FINAL_ISO="$FINAL_ISO_BASENAME" \
-  VM_STORAGE="${VM_STORAGE:-void}" ISO_STORAGE="${ISO_STORAGE:-local}" \
+  VM_STORAGE="${VM_STORAGE:-}" ISO_STORAGE="${ISO_STORAGE:-local}" \
   DISK_SIZE_GB="${DISK_SIZE_GB:-32}" MEMORY_MB="${MEMORY_MB:-4096}" \
   CORES="${CORES:-4}" USE_CLOUD_INIT="${USE_CLOUD_INIT:-false}" \
   'bash -s' <<'EOSSH'
