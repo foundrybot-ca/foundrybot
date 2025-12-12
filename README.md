@@ -1,4 +1,4 @@
-# FoundryBot  
+# FoundryOS
 **One foundation. Any cloud. Any hypervisor. Any hardware.**
 
 A **minimal, self-contained OS foundry**:
