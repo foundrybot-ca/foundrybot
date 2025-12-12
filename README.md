@@ -1,4 +1,4 @@
-# ./deploy.sh - a single script that builds a 4096 ip cluster.
+# ./deploy.sh - a single script to rule them all!
 **One foundation. Any cloud. Any hypervisor. Any hardware.**
 
 A **minimal, self-contained OS foundry**:
