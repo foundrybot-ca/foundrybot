@@ -653,6 +653,7 @@ EOF
   fi
 }
 
+
 # =============================================================================
 # ISO BUILDER
 # =============================================================================
@@ -732,6 +733,286 @@ EOF
     install -m0600 "$ENROLL_KEY_PRIV" "$dark/enroll_ed25519"
     install -m0644 "$ENROLL_KEY_PUB"  "$dark/enroll_ed25519.pub"
   fi
+
+  # ---------- EXTRA: WireGuard refresher baked into darksite ----------
+  cat >"$dark/wg-refresh-planes.py" <<'PY'
+#!/usr/bin/env python3
+import subprocess, json, shutil, time, os
+from pathlib import Path
+
+WG_DIR = Path("/etc/wireguard")
+PLANES = ["wg1", "wg2", "wg3"]
+SALT_TARGET = "*"
+SYSTEMD_UNIT_TEMPLATE = "wg-quick@{iface}.service"
+
+def run(cmd, **kw):
+    kw.setdefault("text", True); kw.setdefault("check", True)
+    return subprocess.run(cmd, stdout=subprocess.PIPE, **kw).stdout
+
+def salt_cmd(target, shell_cmd):
+    out = run(["salt", target, "cmd.run", shell_cmd, "--out=json", "--static", "--no-color"]).strip()
+    if not out:
+        return {}
+    s, e = out.find("{"), out.rfind("}")
+    if s == -1 or e == -1 or e <= s:
+        return {}
+    try:
+        return json.loads(out[s:e+1])
+    except json.JSONDecodeError:
+        return {}
+
+def read_interface_block(conf_path):
+    lines=[]
+    with open(conf_path,"r") as f:
+        for line in f:
+            if line.strip().startswith("[Peer]"): break
+            lines.append(line.rstrip("\n"))
+    return lines
+
+def get_hub_ip(conf_path):
+    with open(conf_path,"r") as f:
+        for line in f:
+            st=line.strip()
+            if st.startswith("Address"):
+                try:
+                    _, rhs = st.split("=",1)
+                    ip = rhs.split("#",1)[0].strip().split("/",1)[0].strip()
+                    return ip
+                except ValueError:
+                    pass
+    return None
+
+def build_peers_for_plane(iface):
+    ips = salt_cmd(SALT_TARGET, f"ip -4 -o addr show dev {iface} 2>/dev/null | awk '{{print $4}}' | cut -d/ -f1")
+    pubs = salt_cmd(SALT_TARGET, f"wg show {iface} public-key 2>/dev/null || true")
+    peers=[]
+    for minion, ip_out in sorted(ips.items()):
+        ip=ip_out.strip()
+        if not ip: continue
+        pub=pubs.get(minion,"").strip()
+        if not pub: continue
+        peers.append({"minion":minion,"ip":ip,"pubkey":pub})
+    return peers
+
+def write_conf_for_plane(iface):
+    p = WG_DIR / f"{iface}.conf"
+    if not p.exists():
+        print(f"[WARN] {p} missing; skip {iface}")
+        return
+    ts=time.strftime("%Y%m%d%H%M%S")
+    shutil.copy2(p, p.with_suffix(p.suffix + f".bak.{ts}"))
+    iface_lines = read_interface_block(p)
+    hub_ip = get_hub_ip(p)
+    peers = build_peers_for_plane(iface)
+    newp = p.with_suffix(p.suffix + ".new")
+    with open(newp,"w") as f:
+        for line in iface_lines: f.write(line+"\n")
+        f.write("\n")
+        for peer in peers:
+            ip=peer["ip"]
+            if hub_ip and ip==hub_ip: continue
+            f.write("[Peer]\n")
+            f.write(f"# {peer['minion']} ({iface})\n")
+            f.write(f"PublicKey = {peer['pubkey']}\n")
+            f.write(f"AllowedIPs = {ip}/32\n\n")
+    os.replace(newp,p)
+    print(f"[INFO] Updated {p}")
+
+def restart_plane(iface):
+    unit = SYSTEMD_UNIT_TEMPLATE.format(iface=iface)
+    try:
+        subprocess.run(["systemctl","restart",unit],check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] restart {unit} failed: {e}")
+
+def main():
+    for iface in PLANES:
+        print(f"=== {iface} ===")
+        write_conf_for_plane(iface)
+        restart_plane(iface)
+
+if __name__=="__main__":
+    main()
+PY
+  chmod 0755 "$dark/wg-refresh-planes.py"
+
+  # ---------- EXTRA: Ansible seed baked into darksite ----------
+  install -d -m0755 "$dark/ansible" "$dark/ansible/group_vars"
+
+  cat >"$dark/ansible/inventory.yaml" <<'YAML'
+all:
+  vars:
+    ansible_user: ansible
+    ansible_ssh_private_key_file: /home/ansible/.ssh/id_ed25519
+    ansible_python_interpreter: /usr/bin/python3
+  children:
+    lb:
+      hosts:
+        k8s-lb1.unixbox.net: { ansible_host: 10.78.0.101 }
+        k8s-lb2.unixbox.net: { ansible_host: 10.78.0.102 }
+    controlplane:
+      hosts:
+        k8s-cp1.unixbox.net: { ansible_host: 10.78.0.110 }
+        k8s-cp2.unixbox.net: { ansible_host: 10.78.0.111 }
+        k8s-cp3.unixbox.net: { ansible_host: 10.78.0.112 }
+    workers:
+      hosts:
+        k8s-w1.unixbox.net:  { ansible_host: 10.78.0.120 }
+        k8s-w2.unixbox.net:  { ansible_host: 10.78.0.121 }
+        k8s-w3.unixbox.net:  { ansible_host: 10.78.0.122 }
+    monitoring:
+      hosts:
+        grafana.unixbox.net:    { ansible_host: 10.78.0.3 }
+        prometheus.unixbox.net: { ansible_host: 10.78.0.2 }
+    storage:
+      hosts:
+        storage.unixbox.net: { ansible_host: 10.78.0.5 }
+    misc:
+      hosts:
+        k8s.unixbox.net: { ansible_host: 10.78.0.4 }
+YAML
+
+  cat >"$dark/ansible/ansible.cfg" <<'CFG'
+[defaults]
+inventory = /etc/ansible/inventory.yaml
+host_key_checking = False
+retry_files_enabled = False
+callbacks_enabled = default
+forks = 25
+[ssh_connection]
+pipelining = True
+CFG
+
+  cat >"$dark/ansible/group_vars/all.yml" <<'VARS'
+become: true
+become_method: sudo
+become_user: root
+
+node_exporter_binary_install_dir: /usr/local/bin
+node_exporter_web_listen_address: "0.0.0.0:9100"
+VARS
+
+  cat >"$dark/ansible/requirements.yml" <<'REQ'
+- src: geerlingguy.containerd
+  version: "1.4.1"
+- src: cloudalchemy.node_exporter
+  version: "0.39.0"
+- src: geerlingguy.haproxy
+  version: "2.9.0"
+REQ
+
+  cat >"$dark/ansible/site.yml" <<'SITE'
+---
+- name: Base platform config
+  hosts: all
+  gather_facts: yes
+  become: yes
+  roles:
+    - cloudalchemy.node_exporter
+
+- name: Load balancers
+  hosts: lb
+  gather_facts: yes
+  become: yes
+  roles:
+    - geerlingguy.haproxy
+
+- name: Container runtime
+  hosts: controlplane:workers
+  gather_facts: yes
+  become: yes
+  roles:
+    - geerlingguy.containerd
+SITE
+
+  # ---------- EXTRA: Master-side bootstrap to wire up SSH/Salt/Ansible ----------
+  cat >"$dark/seed-ansible.sh" <<'SEED'
+#!/usr/bin/env bash
+set -euo pipefail
+
+log(){ printf "[INFO] %(%F %T)T - %s\n" -1 "$*"; }
+warn(){ printf "[WARN] %(%F %T)T - %s\n" -1 "$*" >&2; }
+
+: "${ADMIN_USER:=admin}"
+
+log "Ensuring ansible user ..."
+if ! id -u ansible &>/dev/null; then
+  useradd -m -s /bin/bash ansible
+fi
+install -d -m700 -o ansible -g ansible /home/ansible/.ssh
+if [[ ! -s /home/ansible/.ssh/id_ed25519 ]]; then
+  sudo -u ansible ssh-keygen -t ed25519 -N "" -f /home/ansible/.ssh/id_ed25519 >/dev/null
+fi
+chmod 700 /home/ansible/.ssh
+chmod 600 /home/ansible/.ssh/id_ed25519 /home/ansible/.ssh/id_ed25519.pub
+
+log "Passwordless sudo for ansible ..."
+printf "ansible ALL=(ALL) NOPASSWD:ALL\n" >/etc/sudoers.d/99-ansible
+chmod 440 /etc/sudoers.d/99-ansible
+
+log "SSHD: pubkey only + AllowUsers ansible ..."
+sed -ri 's/^#?PasswordAuthentication.*/PasswordAuthentication no/; s/^#?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+grep -q '^AllowUsers ' /etc/ssh/sshd_config || printf 'AllowUsers ansible\n' >> /etc/ssh/sshd_config
+install -d -m755 /run/sshd
+systemctl restart ssh || true
+
+log "Authorize ${ADMIN_USER}'s key for root (if present) ..."
+if [[ -s "/root/darksite/authorized_keys.${ADMIN_USER}" ]]; then
+  install -d -m700 /root/.ssh
+  cat "/root/darksite/authorized_keys.${ADMIN_USER}" >> /root/.ssh/authorized_keys || true
+  chmod 600 /root/.ssh/authorized_keys
+fi
+
+log "Seed known_hosts for ansible user via Salt roster ..."
+install -d -m700 /home/ansible/.ssh
+KH="/home/ansible/.ssh/known_hosts"
+touch "$KH" && chmod 600 "$KH" && chown -R ansible:ansible /home/ansible/.ssh
+if command -v salt &>/dev/null; then
+  for h in $(salt --out=newline_values_only '*' grains.get fqdn 2>/dev/null || true); do
+    ssh-keygen -R "$h" >/dev/null 2>&1 || true
+    ssh-keyscan -T5 -t ed25519,rsa -H "$h" >> "$KH" 2>/dev/null || true
+  done
+  for ip in $(salt --out=newline_values_only '*' network.ip_addrs cidr=10.78.0.0/16 2>/dev/null || true) \
+             $(salt --out=newline_values_only '*' network.ip_addrs cidr=10.100.10.0/24 2>/dev/null || true); do
+    ssh-keygen -R "$ip" >/dev/null 2>&1 || true
+    ssh-keyscan -T5 -t ed25519,rsa -H "$ip" >> "$KH" 2>/dev/null || true
+  done
+fi
+chown ansible:ansible "$KH"
+
+log "Copy Ansible tree into /etc/ansible ..."
+install -d -m755 /etc/ansible /etc/ansible/group_vars
+cp -f /root/darksite/ansible/inventory.yaml /etc/ansible/inventory.yaml
+cp -f /root/darksite/ansible/ansible.cfg    /etc/ansible/ansible.cfg
+cp -f /root/darksite/ansible/requirements.yml /etc/ansible/requirements.yml
+cp -f /root/darksite/ansible/site.yml /etc/ansible/site.yml
+cp -f /root/darksite/ansible/group_vars/all.yml /etc/ansible/group_vars/all.yml
+chmod 0644 /etc/ansible/* /etc/ansible/group_vars/*
+
+log "Install Galaxy roles (if Ansible present) ..."
+if command -v ansible-galaxy &>/dev/null; then
+  ANSIBLE_ROLES_PATH=/etc/ansible/roles ansible-galaxy install -r /etc/ansible/requirements.yml -p /etc/ansible/roles || warn "galaxy failed"
+else
+  warn "ansible-galaxy not found; skip role install"
+fi
+
+log "WireGuard planes refresh (if configs exist) ..."
+if command -v python3 &>/dev/null; then
+  /usr/bin/env python3 /root/darksite/wg-refresh-planes.py || warn "WG refresh returned non-zero"
+fi
+
+log "Quick Ansible smoke ping ..."
+if command -v ansible &>/dev/null; then
+  ansible -i /etc/ansible/inventory.yaml all -m ping || warn "ansible ping failed"
+  ansible-playbook -i /etc/ansible/inventory.yaml /etc/ansible/site.yml || warn "site.yml apply failed"
+else
+  warn "ansible not installed; skipping applies"
+fi
+
+log "seed-ansible.sh done."
+SEED
+  chmod 0755 "$dark/seed-ansible.sh"
+
   # Preseed (DHCP vs static)
   local NETBLOCK
   if [[ -z "${static_ip}" ]]; then
@@ -1278,6 +1559,220 @@ EOF
   chmod 0755 /usr/local/sbin/register-minion
 }
 
+# --- NEW: drop the enroll script into the master VM --------------------------
+install_wg_enroll_script(){
+  install -d -m0755 /root
+  cat >/root/wg_cluster_enroll.sh <<'EOWG'
+#!/usr/bin/env bash
+# wg_cluster_enroll.sh — master side, enroll all minions as peers on wg0..wg3
+set -euo pipefail
+IFACES="${IFACES:-0 1 2 3}"
+DRY_RUN="${DRY_RUN:-0}"
+LOG="/var/log/wg_cluster_enroll.log"
+exec > >(tee -a "$LOG") 2>&1
+msg(){ echo "[INFO] $(date '+%F %T') - $*"; }
+warn(){ echo "[WARN] $(date '+%F %T') - $*" >&2; }
+die(){ echo "[ERROR] $*" >&2; exit 1; }
+need(){ command -v "$1" >/dev/null 2>&1 || die "missing: $1"; }
+need salt; need wg; need awk; need systemctl; need sed; need grep
+get_minions(){ salt-key -L | awk '/Accepted Keys:/{f=1;next} /Denied Keys:|Rejected Keys:|Unaccepted Keys:/{f=0} f&&NF{print $1}' | sort -u; }
+salt_cat(){ local m="$1" p="$2"; salt --out=newline_values_only -l quiet "$m" cmd.run "cat $p 2>/dev/null || true"; }
+salt_eval(){ local m="$1" c="$2"; salt --out=newline_values_only -l quiet "$m" cmd.run "$c"; }
+ensure_iface_up(){ ip link show "$1" >/dev/null 2>&1 || systemctl enable --now "wg-quick@$1" || true; }
+ensure_peer_in_conf(){
+  local ifn="$1" pub="$2" allowed="$3" conf="/etc/wireguard/${ifn}.conf"
+  [[ -r "$conf" ]] || die "missing $conf"
+  if grep -qF "$pub" "$conf"; then
+    awk -v k="$pub" -v a="$allowed" '
+      BEGIN{found=0; inpeer=0}
+      /\[Peer\]/ {inpeer=1}
+      inpeer && /^PublicKey[[:space:]]*=/ { pk=$0; sub(/^PublicKey[[:space:]]*=[[:space:]]*/,"",pk); if(pk==k){found=1} }
+      found && /^AllowedIPs[[:space:]]*=/ { sub(/^AllowedIPs[[:space:]]*=.*/,"AllowedIPs = " a); found=0; print; next }
+      {print}
+    ' "$conf" > "${conf}.tmp" && mv "${conf}.tmp" "$conf"
+  else
+    {
+      echo ""; echo "[Peer]"; echo "PublicKey  = $pub"; echo "AllowedIPs = $allowed"; echo "PersistentKeepalive = 25"
+    } >> "$conf"; chmod 600 "$conf"
+  fi
+}
+apply_conf_live(){ local ifn="$1" conf="/etc/wireguard/${ifn}.conf"; ip link show "$ifn" >/dev/null 2>&1 || systemctl enable --now "wg-quick@$ifn" || true; wg syncconf "$ifn" <(wg-quick strip "$conf") || true; }
+msg "Enumerating minions"; readarray -t MINIONS < <(get_minions); [[ ${#MINIONS[@]} -gt 0 ]] || die "no accepted minions"
+msg "Collecting pubkeys and desired /32s"
+declare -A PEERS
+for m in "${MINIONS[@]}"; do
+  for i in $IFACES; do
+    ifn="wg${i}"
+    pub="$(salt_cat "$m" "/etc/wireguard/${ifn}.pub" | head -n1 | tr -d '\r')"; [[ -n "$pub" ]] || { warn "$m $ifn: missing pub"; continue; }
+    want="$(salt_eval "$m" "awk -F= '/^WG${i}_WANTED=/{print \$2}' /etc/environment.d/99-provision.conf 2>/dev/null || awk '/^Address/{print \$3}' /etc/wireguard/${ifn}.conf 2>/dev/null | head -n1")"
+    [[ -n "$want" ]] || { warn "$m $ifn: missing addr"; continue; }
+    PEERS["${ifn}|${pub}"]="$want"; echo "  -> $m $ifn ${pub:0:8}… $want"
+  done
+done
+for i in $IFACES; do [[ -r "/etc/wireguard/wg${i}.conf" ]] || die "missing /etc/wireguard/wg${i}.conf"; ensure_iface_up "wg${i}"; done
+for k in "${!PEERS[@]}"; do ifn="${k%%|*}"; pub="${k##*|}"; allowed="${PEERS[$k]}"; ensure_peer_in_conf "$ifn" "$pub" "$allowed"; done
+for i in $IFACES; do apply_conf_live "wg${i}"; done
+for i in $IFACES; do echo "== $i =="; wg show "wg${i}" peers 2>/dev/null || true; done
+EOWG
+  chmod +x /root/wg_cluster_enroll.sh
+}
+
+telemetry_stack(){  # unchanged
+  local wg1_ip; wg1_ip="$(ip -4 addr show dev wg1 | awk '/inet /{print $2}' | cut -d/ -f1)"
+  [[ -n "$wg1_ip" ]] || wg1_ip="${WG1_IP%/*}"
+  apt-get install -y prometheus prometheus-node-exporter grafana || true
+  install -d -m755 /etc/prometheus/targets.d
+  cat >/etc/prometheus/prometheus.yml <<'EOF'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 30s
+scrape_configs:
+  - job_name: 'node'
+    file_sd_configs:
+      - files:
+        - /etc/prometheus/targets.d/*.json
+EOF
+  install -d -m755 /etc/systemd/system/prometheus.service.d
+  cat >/etc/systemd/system/prometheus.service.d/override.conf <<EOF
+[Service]
+Environment=
+ExecStart=
+ExecStart=/usr/bin/prometheus --web.listen-address=${wg1_ip}:9090 --config.file=/etc/prometheus/prometheus.yml
+EOF
+  install -d -m755 /etc/systemd/system/prometheus-node-exporter.service.d
+  cat >/etc/systemd/system/prometheus-node-exporter.service.d/override.conf <<EOF
+[Service]
+Environment=
+ExecStart=
+ExecStart=/usr/bin/prometheus-node-exporter --web.listen-address=${wg1_ip}:9100 --web.disable-exporter-metrics
+EOF
+  cat >/etc/systemd/system/prometheus.service.d/wg-order.conf <<'EOF'
+[Unit]
+After=wg-quick@wg1.service network-online.target
+Wants=wg-quick@wg1.service network-online.target
+EOF
+  cat >/etc/systemd/system/prometheus-node-exporter.service.d/wg-order.conf <<'EOF'
+[Unit]
+After=wg-quick@wg1.service network-online.target
+Wants=wg-quick@wg1.service network-online.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now prometheus prometheus-node-exporter || true
+  install -d /etc/grafana/provisioning/{datasources,dashboards}
+  cat >/etc/grafana/provisioning/datasources/prom.yaml <<EOF
+apiVersion: 1
+datasources:
+- name: Prometheus
+  type: prometheus
+  access: proxy
+  url: http://${wg1_ip}:9090
+  isDefault: true
+EOF
+  install -d -m755 /var/lib/grafana/dashboards/node
+  cat >/etc/grafana/provisioning/dashboards/node.yaml <<'EOF'
+apiVersion: 1
+providers:
+- name: node
+  orgId: 1
+  folder: "Node"
+  type: file
+  options:
+    path: /var/lib/grafana/dashboards/node
+EOF
+  cat >/var/lib/grafana/dashboards/node/quick-node.json <<'EOF'
+{"annotations":{"list":[{"builtIn":1,"datasource":{"type":"grafana","uid":"grafana"},"enable":true,"hide":true,"iconColor":"rgba(0, 211, 255, 1)","name":"Annotations & Alerts","type":"dashboard"}]},"editable":true,"graphTooltip":0,"panels":[{"type":"stat","title":"Up targets","datasource":"Prometheus","targets":[{"expr":"up"}]}],"schemaVersion":39,"style":"dark","time":{"from":"now-15m","to":"now"},"title":"Quick Node","version":1}
+EOF
+  systemctl enable --now grafana-server || true
+}
+
+control_stack(){  # unchanged
+  apt-get install -y --no-install-recommends salt-master salt-api salt-common || true
+  install -d -m0755 /etc/salt/master.d
+  cat >/etc/salt/master.d/network.conf <<'EOF'
+interface: 10.77.0.1
+ipv6: False
+publish_port: 4505
+ret_port: 4506
+EOF
+  cat >/etc/salt/master.d/api.conf <<'EOF'
+rest_cherrypy:
+  host: 10.77.0.1
+  port: 8000
+  disable_ssl: True
+EOF
+  install -d -m0755 /etc/systemd/system/salt-master.service.d
+  cat >/etc/systemd/system/salt-master.service.d/override.conf <<'EOF'
+[Unit]
+After=wg-quick@wg0.service network-online.target
+Wants=wg-quick@wg0.service network-online.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now salt-master salt-api || true
+
+  if [ "${INSTALL_ANSIBLE}" = "yes" ]; then apt-get install -y ansible || true; fi
+
+  if [ "${INSTALL_SEMAPHORE}" != "no" ]; then
+    install -d -m755 /etc/semaphore
+    if curl -fsSL -o /usr/local/bin/semaphore https://github.com/ansible-semaphore/semaphore/releases/latest/download/semaphore_linux_amd64 2>/dev/null; then
+      chmod +x /usr/local/bin/semaphore
+      cat >/etc/systemd/system/semaphore.service <<'EOF'
+[Unit]
+Description=Ansible Semaphore
+After=wg-quick@wg0.service network-online.target
+Wants=wg-quick@wg0.service
+[Service]
+ExecStart=/usr/local/bin/semaphore server --listen 10.77.0.1:3000
+Restart=always
+User=root
+[Install]
+WantedBy=multi-user.target
+EOF
+      systemctl daemon-reload; systemctl enable --now semaphore || true
+    else
+      echo "[WARN] Semaphore binary not fetched; install later." >&2
+    fi
+  fi
+}
+
+desktop_gui() {  # unchanged
+  case "${GUI_PROFILE}" in
+    rdp-minimal)
+      apt-get install -y --no-install-recommends xorg xrdp xorgxrdp openbox xterm firefox-esr || true
+      if [[ -f /etc/xrdp/xrdp.ini ]]; then
+        sed -i 's/^\s*port\s*=.*/; &/' /etc/xrdp/xrdp.ini || true
+        if grep -qE '^\s*address=' /etc/xrdp/xrdp.ini; then
+          sed -i "s|^\s*address=.*|address=${MASTER_LAN}|" /etc/xrdp/xrdp.ini
+        else
+          sed -i "1i address=${MASTER_LAN}" /etc/xrdp/xrdp.ini
+        fi
+        if grep -qE '^\s*;port=' /etc/xrdp/xrdp.ini; then
+          sed -i 's|^\s*;port=.*|port=3389|' /etc/xrdp/xrdp.ini
+        elif grep -qE '^\s*port=' /etc/xrdp/xrdp.ini; then
+          sed -i 's|^\s*port=.*|port=3389|' /etc/xrdp/xrdp.ini
+        else
+          sed -i '1i port=3389' /etc/xrdp/xrdp.ini
+        fi
+      fi
+      cat >/etc/xrdp/startwm.sh <<'EOSH'
+#!/bin/sh
+export DESKTOP_SESSION=openbox
+export XDG_SESSION_DESKTOP=openbox
+export XDG_CURRENT_DESKTOP=openbox
+[ -x /usr/bin/openbox-session ] && exec /usr/bin/openbox-session
+[ -x /usr/bin/openbox ] && exec /usr/bin/openbox
+exec /usr/bin/xterm
+EOSH
+      chmod +x /etc/xrdp/startwm.sh
+      systemctl daemon-reload || true
+      systemctl enable --now xrdp || true
+      ;;
+    wayland-gdm-minimal)
+      apt-get install -y --no-install-recommends gdm3 gnome-shell gnome-session-bin firefox-esr || true
+      systemctl enable --now gdm3 || true
+      ;;
+  esac
+}
+
 # -----------------------------------------------------------------------------
 salt_master_stack() {
   log "Installing and configuring Salt master on LAN"
@@ -1401,119 +1896,6 @@ base:
     - wireguard
 EOF
 
-	###########################################################################
-  # ROLL: k8s_cilium.sls
-	###########################################################################
-	cat >/srv/salt/roles/k8s_cilium.sls <<EOF
-# /srv/salt/roles/k8s_cilium.sls
-#
-# Install and deploy Cilium CNI on the cluster.
-# Assumes this runs on a control-plane node with /etc/kubernetes/admin.conf present.
-
-{% set cluster = pillar.get('cluster', {}) %}
-{% set k8s = cluster.get('k8s', {}) %}
-{% set pod_subnet = k8s.get('pod_subnet', '10.244.0.0/16') %}
-
-# Basic tools
-k8s-cilium-prereqs:
-  pkg.installed:
-    - pkgs:
-      - ca-certificates
-      - curl
-      - tar
-    - reload_modules: False
-
-# Directory for cilium CLI
-k8s-cilium-bin-dir:
-  file.directory:
-    - name: /usr/local/bin
-    - mode: '0755'
-    - user: root
-    - group: root
-
-# Download and install cilium CLI if not present
-k8s-cilium-cli:
-  cmd.run:
-    - name: |
-        set -e
-        TMPDIR="$(mktemp -d)"
-        cd "$TMPDIR"
-        # You can pin a specific version if you want; this grabs latest stable by arch
-        ARCH=$(uname -m)
-        case "$ARCH" in
-          x86_64) CILIUM_ARCH=amd64 ;;
-          aarch64|arm64) CILIUM_ARCH=arm64 ;;
-          *) echo "Unsupported arch: $ARCH" >&2; exit 1 ;;
-        esac
-        curl -fsSL --retry 5 --retry-delay 3 \
-          "https://github.com/cilium/cilium-cli/releases/latest/download/cilium-linux-${CILIUM_ARCH}.tar.gz" \
-          -o cilium.tar.gz
-        tar xzf cilium.tar.gz
-        mv cilium /usr/local/bin/cilium
-        chmod 0755 /usr/local/bin/cilium
-        rm -rf "$TMPDIR"
-    - unless: test -x /usr/local/bin/cilium
-    - require:
-      - pkg: k8s-cilium-prereqs
-      - file: k8s-cilium-bin-dir
-
-# Ensure kubeconfig exists (we expect this on a control-plane node)
-k8s-cilium-kubeconfig-check:
-  cmd.run:
-    - name: test -f /etc/kubernetes/admin.conf
-    - require:
-      - cmd: k8s-cilium-cli
-
-# Wait for apiserver health before deploying Cilium
-k8s-cilium-wait-apiserver:
-  cmd.run:
-    - name: |
-        export KUBECONFIG=/etc/kubernetes/admin.conf
-        for i in $(seq 1 30); do
-          if kubectl get --raw /healthz >/dev/null 2>&1; then
-            echo "apiserver is healthy"
-            exit 0
-          fi
-          echo "waiting for apiserver /healthz ($i/30)..."
-          sleep 5
-        done
-        echo "apiserver did not become healthy in time" >&2
-        exit 1
-    - require:
-      - cmd: k8s-cilium-kubeconfig-check
-
-# Deploy Cilium CNI
-k8s-cilium-deploy:
-  cmd.run:
-    - name: |
-        export KUBECONFIG=/etc/kubernetes/admin.conf
-        # Install Cilium with a basic config, using your pod subnet
-        cilium install \
-          --set ipam.mode=kubernetes \
-          --set cluster.name=unixbox-k8s \
-          --set cluster.id=1 \
-          --set kubeProxyReplacement=partial \
-          --set routingMode=tunnel \
-          --set tunnelProtocol=vxlan \
-          --set ipv4.enabled=true \
-          --set ipv6.enabled=false \
-          --set ipam.operator.clusterPoolIPv4PodCIDRList="{{ pod_subnet }}"
-    - unless: |
-        export KUBECONFIG=/etc/kubernetes/admin.conf
-        kubectl -n kube-system get pods -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}' 2>/dev/null | grep -q cilium
-    - require:
-      - cmd: k8s-cilium-wait-apiserver
-
-# Optionally wait for Cilium to be ready on all nodes (for future multi-node)
-k8s-cilium-status:
-  cmd.run:
-    - name: |
-        export KUBECONFIG=/etc/kubernetes/admin.conf
-        cilium status --wait
-    - require:
-      - cmd: k8s-cilium-deploy
-EOF
-
   ###########################################################################
   # PILLAR: cluster.sls
   ###########################################################################
@@ -1528,7 +1910,6 @@ cluster:
   k8s:
     api_vip: ${K8SLB1_IP}
     version_minor: "v1.34"
-    version_full: "1.34.6-00"
     pod_subnet: "10.244.0.0/16"
     service_subnet: "10.96.0.0/12"
 
@@ -1557,9 +1938,6 @@ cluster:
     # Filled in dynamically after CP1 init
     token: ""
     ca_hash: ""
-    # quality-of-life
-    local_admin_user: "${ADMIN_USER}"
-    enable_superadmin: true
 EOF
 
   log "Seeding /srv/pillar and /srv/salt tree"
@@ -1575,7 +1953,6 @@ EOF
   # /srv/salt/top.sls — map nodes via grains
   ###########################################################################
   cat >/srv/salt/top.sls <<'EOF'
-# /srv/salt/top.sls
 base:
   'role:k8s-lb':
     - match: grain
@@ -1585,7 +1962,6 @@ base:
     - match: grain
     - roles.k8s_control_plane
     - roles.k8s_cp_init
-    - roles.k8s_flannel
 
   'role:k8s-cp-join':
     - match: grain
@@ -1607,7 +1983,6 @@ base:
 
   '*':
     - common.baseline
-
 EOF
 
   ###########################################################################
@@ -2054,8 +2429,10 @@ EOF
   # roles/k8s_lb.sls  (HAProxy for K8s API – pillar-driven)
   # ---------------------------------------------------------------------------
   cat >/srv/salt/roles/k8s_lb.sls <<'EOF'
-# /srv/salt/roles/k8s_lb.sls
+# Kubernetes API load balancer (HAProxy) for Debian 13
+
 {% set cluster = pillar.get('cluster', {}) %}
+{% set domain = cluster.get('domain', 'cluster.local') %}
 {% set k8s = cluster.get('k8s', {}) %}
 {% set control_planes = k8s.get('control_planes', []) %}
 
@@ -2107,6 +2484,7 @@ k8s-lb-haproxy-config:
 {% for cp in control_planes %}
           server {{ cp.name }} {{ cp.ip }}:6443 check
 {% endfor %}
+  # If control_planes is empty, backend will be empty until pillar is updated.
 
 k8s-lb-haproxy-service:
   service.running:
@@ -2114,7 +2492,24 @@ k8s-lb-haproxy-service:
     - enable: True
     - require:
       - file: k8s-lb-haproxy-config
+EOF
 
+  # ---------------------------------------------------------------------------
+  # roles/k8s_flannel.sls (CNI from upstream manifest)
+  # ---------------------------------------------------------------------------
+  cat >/srv/salt/roles/k8s_flannel.sls <<'EOF'
+# Flannel CNI deployment for Kubernetes
+
+k8s-flannel-apply:
+  cmd.run:
+    - name: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+    - onlyif: test -f /etc/kubernetes/admin.conf
+    - unless: |
+        export KUBECONFIG=/etc/kubernetes/admin.conf
+        kubectl get daemonset -n kube-flannel kube-flannel -o jsonpath='{.status.numberReady}' 2>/dev/null \
+          | grep -Eq '^[1-9]'
 EOF
 }
 
@@ -2377,6 +2772,213 @@ EOF
   log "K8s support tools installed: gen_wireguard_pillar.py, update_k8s_join_pillar.sh"
 }
 
+install_wg_refresh_tool() {
+  log "Installing WireGuard plane refresh tool (wg-refresh-planes)"
+
+  install -d -m0755 /usr/local/sbin
+  install -d -m0755 /root/darksite || true
+
+  cat >/usr/local/sbin/wg-refresh-planes <<'EOF_WG_REFRESH_PY'
+#!/usr/bin/env python3
+# Rebuild wg1/wg2/wg3 hub configs from minion state via Salt
+
+import subprocess
+import json
+import shutil
+import time
+import os
+from pathlib import Path
+
+WG_DIR = Path("/etc/wireguard")
+PLANES = ["wg1", "wg2", "wg3"]
+SALT_TARGET = "*"          # adjust if you want a subset
+SYSTEMD_UNIT_TEMPLATE = "wg-quick@{iface}.service"
+
+
+def run(cmd, **kwargs):
+    """Run a command and return stdout (text)."""
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("check", True)
+    return subprocess.run(cmd, stdout=subprocess.PIPE, **kwargs).stdout
+
+
+def salt_cmd(target, shell_cmd):
+    """
+    Run a Salt cmd.run on all matching minions and return a dict:
+        {minion_id: "output string"}
+
+    We add --no-color and --static, and defensively extract the JSON
+    payload between the first '{' and last '}' to avoid log noise.
+    """
+    out = run([
+        "salt", target, "cmd.run", shell_cmd,
+        "--out=json", "--static", "--no-color"
+    ])
+    out = out.strip()
+    if not out:
+        return {}
+
+    # Strip anything before the first '{' and after the last '}'
+    start = out.find("{")
+    end = out.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        print(f"[WARN] Could not find JSON object in Salt output for cmd: {shell_cmd}")
+        print(f"[WARN] Raw output was:\n{out}")
+        return {}
+
+    json_str = out[start:end + 1]
+
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"[WARN] JSON decode failed for Salt output (cmd: {shell_cmd}): {e}")
+        print(f"[WARN] Extracted JSON candidate was:\n{json_str}")
+        return {}
+
+
+def read_interface_block(conf_path):
+    """
+    Read only the [Interface] block from an existing wgX.conf,
+    stopping at the first [Peer] (if any).
+    Returns list of lines (without trailing newlines).
+    """
+    lines = []
+    with open(conf_path, "r") as f:
+        for line in f:
+            if line.strip().startswith("[Peer]"):
+                break
+            lines.append(line.rstrip("\n"))
+    return lines
+
+
+def get_hub_ip(conf_path):
+    """
+    Parse the 'Address = 10.x.x.x/nn' line from the [Interface] section
+    and return just the IP (no CIDR).
+    """
+    with open(conf_path, "r") as f:
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith("Address"):
+                # e.g. "Address    = 10.78.0.1/16"
+                try:
+                    _, rhs = stripped.split("=", 1)
+                    addr = rhs.split("#", 1)[0].strip()
+                    ip = addr.split("/", 1)[0].strip()
+                    return ip
+                except ValueError:
+                    continue
+    return None
+
+
+def build_peers_for_plane(iface):
+    """
+    For a given interface (wg1, wg2, wg3):
+      - ask all minions for IP on that interface
+      - ask all minions for public key
+    Returns list of dicts: {"minion": ..., "ip": ..., "pubkey": ...}
+    """
+    # Get IPv4 addr on that interface (one IP per minion)
+    ip_cmd = f"ip -4 -o addr show dev {iface} 2>/dev/null | awk '{{print $4}}' | cut -d/ -f1"
+    ips = salt_cmd(SALT_TARGET, ip_cmd)
+
+    # Get public key for that interface
+    pk_cmd = f"wg show {iface} public-key 2>/dev/null || true"
+    pubkeys = salt_cmd(SALT_TARGET, pk_cmd)
+
+    peers = []
+    for minion, ip_out in sorted(ips.items()):
+        ip = ip_out.strip()
+        if not ip:
+            continue  # no IP on this iface
+        pubkey = pubkeys.get(minion, "").strip()
+        if not pubkey:
+            continue  # no public key
+        peers.append({"minion": minion, "ip": ip, "pubkey": pubkey})
+    return peers
+
+
+def write_conf_for_plane(iface):
+    conf_path = WG_DIR / f"{iface}.conf"
+    if not conf_path.exists():
+        print(f"[WARN] {conf_path} does not exist, skipping {iface}")
+        return
+
+    # Backup existing config
+    ts = time.strftime("%Y%m%d%H%M%S")
+    backup_path = conf_path.with_suffix(conf_path.suffix + f".bak.{ts}")
+    shutil.copy2(conf_path, backup_path)
+    print(f"[INFO] Backed up {conf_path} -> {backup_path}")
+
+    # Read interface block and hub IP
+    iface_lines = read_interface_block(conf_path)
+    hub_ip = get_hub_ip(conf_path)
+    if not hub_ip:
+        print(f"[WARN] Could not determine hub IP from {conf_path}, continuing anyway")
+
+    # Gather peers via Salt
+    peers = build_peers_for_plane(iface)
+    if not peers:
+        print(f"[WARN] No peers found for {iface}, leaving only [Interface]")
+    else:
+        print(f"[INFO] Found {len(peers)} peers for {iface}")
+
+    # Write new config
+    new_path = conf_path.with_suffix(conf_path.suffix + ".new")
+    with open(new_path, "w") as f:
+        # [Interface] block
+        for line in iface_lines:
+            f.write(line + "\n")
+        f.write("\n")
+
+        # [Peer] blocks
+        for peer in peers:
+            ip = peer["ip"]
+            # Skip adding self (hub) if it shows up in Salt results
+            if hub_ip and ip == hub_ip:
+                continue
+
+            f.write("[Peer]\n")
+            f.write(f"# {peer['minion']} ({iface})\n")
+            f.write(f"PublicKey = {peer['pubkey']}\n")
+            f.write(f"AllowedIPs = {ip}/32\n")
+            # Uncomment if you want keepalive from clients back to hub
+            # f.write("PersistentKeepalive = 25\n")
+            f.write("\n")
+
+    # Replace original with new
+    os.replace(new_path, conf_path)
+    print(f"[INFO] Updated {conf_path}")
+
+
+def restart_plane(iface):
+    unit = SYSTEMD_UNIT_TEMPLATE.format(iface=iface)
+    print(f"[INFO] Restarting {unit}")
+    try:
+        run(["systemctl", "restart", unit])
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to restart {unit}: {e}")
+
+
+def main():
+    for iface in PLANES:
+        print(f"=== Processing {iface} ===")
+        write_conf_for_plane(iface)
+        restart_plane(iface)
+
+
+if __name__ == "__main__":
+    main()
+EOF_WG_REFRESH_PY
+
+  chmod 0755 /usr/local/sbin/wg-refresh-planes
+
+  # Optional copy into darksite bundle for traceability
+  cp -f /usr/local/sbin/wg-refresh-planes /root/darksite/wg-refresh-planes.py 2>/dev/null || true
+
+  log "wg-refresh-planes installed (Python tool + darksite copy)"
+}
+
 ansible_stack() {
   if [ "${INSTALL_ANSIBLE}" != "yes" ]; then
     log "INSTALL_ANSIBLE != yes; skipping Ansible stack"
@@ -2630,21 +3232,16 @@ PS1='\u@\h:\w\$ '
 # -------------------------------------------------------------------
 fb_banner() {
   cat << 'FBBANNER'
-
-   oec :                                            dF                        ..
-  @88888         u.      x.    .        u.    u.   '88bu.         .u    .    @L
-  8"*88%   ...ue888b   .@88k  z88u    x@88k u@88c. '*88888bu    .d88B :@8c  9888i   .dL
-  8b.      888R Y888r ~"8888 ^8888   ^"8888""8888"   ^"*8888N  ="8888f8888r `Y888k:*888.
- u888888>  888R I888>   8888  888R     8888  888R   beWE "888L   4888>'88"    888E  888I
-  8888R    888R I888>   8888  888R     8888  888R   888E  888E   4888> '      888E  888I
-  8888P    888R I888>   8888  888R     8888  888R   888E  888E   4888>        888E  888I
-  *888>   u8888cJ888    8888 ,888B .   8888  888R   888E  888F  .d888L .+     888E  888I
-  4888     "*888*P"    "8888Y 8888"   "*88*" 8888" .888N..888   ^"8888*"      x888N><888'
-  '888       'Y"        `Y"   'YP       ""   'Y"    `"888*""       "Y"        "88"  888
-   88R                                                 ""                           88F
-   88>                                                                              98" OS
-   48         zero trust · borg-like · agnostic platfourms -> everywhere.          ./"
-   '8                                                                             ~`
+   ___                           __                  ______          __
+ /'___\                         /\ \                /\     \        /\ \__
+/\ \__/  ___   __  __    ___    \_\ \  _ __   __  __\ \ \L\ \    ___\ \ ,_\
+\ \ ,__\/ __`\/\ \/\ \ /' _ `\  /'_` \/\`'__\/\ \/\ \\ \  _ <'  / __`\ \ \/
+ \ \ \_/\ \L\ \ \ \_\ \/\ \/\ \/\ \L\ \ \ \/ \ \ \_\ \\ \ \L\ \/\ \L\ \ \ \_
+  \ \_\\ \____/\ \____/\ \_\ \_\ \___,_\ \_\  \/`____ \\ \____/\ \____/\ \__\
+   \/_/ \/___/  \/___/  \/_/\/_/\/__,_ /\/_/   `/___/> \\/___/  \/___/  \/__/
+                                                  /\___/
+                                                  \/__/
+           secure cluster deploy & control
 
 FBBANNER
 }
@@ -2743,6 +3340,210 @@ fb_world() {
   salt "*" state.apply world
 }
 
+fb_k8s_cluster() {
+  echo "Applying 'k8s.cluster' to role:k8s_cp and role:k8s_worker..."
+  salt -C 'G@role:k8s_cp or G@role:k8s_worker' state.apply k8s.cluster
+}
+# -------------------------------------------------------------------
+# Kubernetes helper commands (Salt-powered via role:k8s_cp)
+# -------------------------------------------------------------------
+
+# Core cluster info
+skcls()   { salt -G "role:k8s_cp" cmd.run 'kubectl cluster-info'; }
+sknodes() { salt -G "role:k8s_cp" cmd.run 'kubectl get nodes -o wide'; }
+skpods()  { salt -G "role:k8s_cp" cmd.run 'kubectl get pods -A -o wide'; }
+sksys()   { salt -G "role:k8s_cp" cmd.run 'kubectl get pods -n kube-system -o wide'; }
+sksvc()   { salt -G "role:k8s_cp" cmd.run 'kubectl get svc -A -o wide'; }
+sking()   { salt -G "role:k8s_cp" cmd.run 'kubectl get ingress -A -o wide'; }
+skapi()   { salt -G "role:k8s_cp" cmd.run 'kubectl api-resources | column -t'; }
+
+# Health & metrics
+skready() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get nodes -o json | jq -r ".items[] | [.metadata.name, (.status.conditions[] | select(.type==\"Ready\").status)] | @tsv"'
+}
+
+sktop() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl top nodes 2>/dev/null || echo metrics-server-not-installed'
+}
+
+sktopp() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl top pods -A --use-protocol-buffers 2>/dev/null || echo metrics-server-not-installed'
+}
+
+skevents() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get events -A --sort-by=.lastTimestamp | tail -n 40'
+}
+
+skdescribe() {
+  if [ -z "$1" ]; then
+    echo "Usage: skdescribe <pod> [namespace]"
+    return 1
+  fi
+  local pod="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl describe pod $pod -n $ns"
+}
+
+# Workload inventory
+skdeploy() { salt -G "role:k8s_cp" cmd.run 'kubectl get deploy -A -o wide'; }
+skrs()     { salt -G "role:k8s_cp" cmd.run 'kubectl get rs -A -o wide'; }
+sksts()    { salt -G "role:k8s_cp" cmd.run 'kubectl get statefulset -A -o wide'; }
+skdaemon() { salt -G "role:k8s_cp" cmd.run 'kubectl get daemonset -A -o wide'; }
+
+# Labels & annotations
+sklabel() {
+  if [ $# -lt 2 ]; then
+    echo "Usage: sklabel <key>=<value> <pod> [namespace]"
+    return 1
+  fi
+  local kv="$1"
+  local pod="$2"
+  local ns="${3:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl label pod $pod -n $ns $kv --overwrite"
+}
+
+skannot() {
+  if [ $# -lt 2 ]; then
+    echo "Usage: skannot <key>=<value> <pod> [namespace]"
+    return 1
+  fi
+  local kv="$1"
+  local pod="$2"
+  local ns="${3:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl annotate pod $pod -n $ns $kv --overwrite"
+}
+
+# Networking
+sknetpol() {
+  salt -G "role:k8s_cp" cmd.run 'kubectl get networkpolicies -A -o wide'
+}
+
+skcni() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get pods -n kube-flannel -o wide 2>/dev/null || kubectl get pods -n kube-system | grep -i cni'
+}
+
+sksvcips() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get svc -A -o json | jq -r ".items[]|[.metadata.namespace,.metadata.name,.spec.clusterIP]|@tsv"'
+}
+
+skdns() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide 2>/dev/null || kubectl get pods -n kube-system | grep -i coredns'
+}
+
+# Logs
+sklog() {
+  if [ -z "$1" ]; then
+    echo "Usage: sklog <pod> [namespace]"
+    return 1
+  fi
+  local pod="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl logs $pod -n $ns --tail=200"
+}
+
+sklogf() {
+  if [ -z "$1" ]; then
+    echo "Usage: sklogf <pod> [namespace]"
+    return 1
+  fi
+  local pod="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl logs $pod -n $ns -f"
+}
+
+sklogs_ns() {
+  local ns="${1:-default}"
+  salt -G "role:k8s_cp" cmd.run \
+    "kubectl get pods -n $ns -o json \
+      | jq -r '.items[].metadata.name' \
+      | xargs -I {} kubectl logs {} -n $ns --tail=40"
+}
+
+# Container runtime & node diag
+skcri()   { salt -G "role:k8s_cp" cmd.run 'crictl ps -a 2>/dev/null || echo no-cri-tools'; }
+skdmesg() { salt "*" cmd.run 'dmesg | tail -n 25'; }
+skoom()   { salt "*" cmd.run 'journalctl -k -g OOM -n 20 --no-pager'; }
+
+# Rollouts & node lifecycle
+skroll() {
+  if [ -z "$1" ]; then
+    echo "Usage: skroll <deployment> [namespace]"
+    return 1
+  fi
+  local deploy="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl rollout restart deploy/$deploy -n $ns"
+}
+
+skundo() {
+  if [ -z "$1" ]; then
+    echo "Usage: skundo <deployment> [namespace]"
+    return 1
+  fi
+  local deploy="$1"
+  local ns="${2:-default}"
+  salt -G "role:k8s_cp" cmd.run "kubectl rollout undo deploy/$deploy -n $ns"
+}
+
+skdrain() {
+  if [ -z "$1" ]; then
+    echo "Usage: skdrain <node>"
+    return 1
+  fi
+  local node="$1"
+  salt -G "role:k8s_cp" cmd.run "kubectl drain $node --ignore-daemonsets --force --delete-emptydir-data"
+}
+
+skuncordon() {
+  if [ -z "$1" ]; then
+    echo "Usage: skuncordon <node>"
+    return 1
+  fi
+  local node="$1"
+  salt -G "role:k8s_cp" cmd.run "kubectl uncordon $node"
+}
+
+skcordon() {
+  if [ -z "$1" ]; then
+    echo "Usage: skcordon <node>"
+    return 1
+  fi
+  local node="$1"
+  salt -G "role:k8s_cp" cmd.run "kubectl cordon $node"
+}
+
+# Security / certs / RBAC
+skrbac() {
+  salt -G "role:k8s_cp" cmd.run 'kubectl get roles,rolebindings -A -o wide'
+}
+
+sksa() {
+  salt -G "role:k8s_cp" cmd.run 'kubectl get sa -A -o wide'
+}
+
+skcerts() {
+  salt -G "role:k8s_cp" cmd.run \
+    'for i in /etc/kubernetes/pki/*.crt; do echo "== $(basename "$i") =="; openssl x509 -in "$i" -text -noout | head -n 10; echo; done'
+}
+
+# Show-offs
+skpodsmap() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl get pods -A -o json | jq -r ".items[] | [.metadata.namespace,.metadata.name,.status.podIP,(.spec.containers|length),.spec.nodeName] | @tsv"'
+}
+
+sktopcpu() {
+  salt -G "role:k8s_cp" cmd.run \
+    'kubectl top pod -A 2>/dev/null | sort -k3 -r | head -n 15'
+}
+
 # -------------------------------------------------------------------
 # Helper: print cheat sheet of all the good stuff
 # -------------------------------------------------------------------
@@ -2759,6 +3560,38 @@ shl() {
 "  smem5         - Top 5 memory-hungry processes on each minion." \
 "  fb_world      - Apply top-level 'world' Salt state to all minions." \
 "  fb_k8s_cluster- Apply 'k8s.cluster' state to CP + workers." \
+"" \
+"Kubernetes cluster helpers (via role:k8s_cp):" \
+"  skcls         - Show cluster-info." \
+"  sknodes       - List nodes (wide)." \
+"  skpods        - List all pods (all namespaces, wide)." \
+"  sksys         - Show kube-system pods." \
+"  sksvc         - List all services." \
+"  sking         - List all ingresses." \
+"  skapi         - Show API resources." \
+"  skready       - Show node Ready status." \
+"  sktop         - Node CPU/mem usage (if metrics-server installed)." \
+"  sktopp        - Pod CPU/mem usage (if metrics-server installed)." \
+"  skevents      - Tail the last cluster events." \
+"  skdeploy      - List deployments (all namespaces)." \
+"  sksts         - List StatefulSets." \
+"  skdaemon      - List DaemonSets." \
+"  sknetpol      - List NetworkPolicies." \
+"  sksvcips      - Map svc -> ClusterIP." \
+"  skdns         - Show cluster DNS pods." \
+"  sklog         - Show logs for a pod: sklog <pod> [ns]." \
+"  sklogf        - Follow logs for a pod: sklogf <pod> [ns]." \
+"  sklogs_ns     - Tail logs for all pods in a namespace." \
+"  skroll        - Restart a deployment: skroll <deploy> [ns]." \
+"  skundo        - Rollback a deployment: skundo <deploy> [ns]." \
+"  skdrain       - Drain a node." \
+"  skcordon      - Cordon a node." \
+"  skuncordon    - Uncordon a node." \
+"  skrbac        - List Roles and RoleBindings." \
+"  sksa          - List ServiceAccounts." \
+"  skcerts       - Dump brief info about control-plane certs." \
+"  skpodsmap     - Pretty map of pods (ns, name, IP, containers, node)." \
+"  sktopcpu      - Top 15 CPU-hungry pods." \
 "" \
 "Other:" \
 "  cp/mv/rm      - Interactive (prompt before overwrite/delete)." \
@@ -2794,37 +3627,38 @@ write_tmux_conf() {
   local TMUX_CONF="/etc/skel/.tmux.conf"
 
   cat > "$TMUX_CONF" <<'EOF'
-# ~/.tmux.conf
+# ~/.tmux.conf — Airline-style theme
 set -g mouse on
 setw -g mode-keys vi
-set -g history-limit 100000
+set -g history-limit 10000
 set -g default-terminal "screen-256color"
-set -ga terminal-overrides ",xterm-256color:Tc"
-set -g status on
-set -g status-interval 5
-set -g status-justify centre
-set -g status-bg colour236
-set -g status-fg colour250
-set -g status-style bold
-set -g status-left-length 60
-set -g status-left "#[fg=colour0,bg=colour83] #S #[fg=colour83,bg=colour55,nobold,nounderscore,noitalics]"
-set -g status-right-length 120
-set -g status-right "#[fg=colour55,bg=colour236]#[fg=colour250,bg=colour55] %Y-%m-%d  %H:%M #[fg=colour236,bg=colour55]#[fg=colour0,bg=colour236] #H "
-setw -g window-status-current-style "fg=colour0,bg=colour83,bold"
-setw -g window-status-current-format " #I:#W "
-setw -g window-status-style "fg=colour250,bg=colour236"
-setw -g window-status-format " #I:#W "
-set -g pane-border-style "fg=colour238"
-set -g pane-active-border-style "fg=colour83"
-set -g message-style "bg=colour55,fg=colour250"
-set -g message-command-style "bg=colour55,fg=colour250"
-setw -g bell-action none
-unbind '"' ; unbind %
+set-option -ga terminal-overrides ",xterm-256color:Tc"
+set-option -g status on
+set-option -g status-interval 5
+set-option -g status-justify centre
+set-option -g status-bg colour236
+set-option -g status-fg colour250
+set-option -g status-style bold
+set-option -g status-left-length 60
+set-option -g status-left "#[fg=colour0,bg=colour83] #S #[fg=colour83,bg=colour55,nobold,nounderscore,noitalics]"
+set-option -g status-right-length 120
+set-option -g status-right "#[fg=colour55,bg=colour236]#[fg=colour250,bg=colour55] %Y-%m-%d  %H:%M #[fg=colour236,bg=colour55]#[fg=colour0,bg=colour236] #H "
+set-window-option -g window-status-current-style "fg=colour0,bg=colour83,bold"
+set-window-option -g window-status-current-format " #I:#W "
+set-window-option -g window-status-style "fg=colour250,bg=colour236"
+set-window-option -g window-status-format " #I:#W "
+set-option -g pane-border-style "fg=colour238"
+set-option -g pane-active-border-style "fg=colour83"
+set-option -g message-style "bg=colour55,fg=colour250"
+set-option -g message-command-style "bg=colour55,fg=colour250"
+set-window-option -g bell-action none
 bind | split-window -h
 bind - split-window -v
+unbind '"'
+unbind %
 bind r source-file ~/.tmux.conf \; display-message "Reloaded!"
-bind-key -T copy-mode-vi v send -X begin-selection
-bind-key -T copy-mode-vi y send -X copy-selection-and-cancel
+bind-key -T copy-mode-vi 'v' send -X begin-selection
+bind-key -T copy-mode-vi 'y' send -X copy-selection-and-cancel
 EOF
 
   log ".tmux.conf written to /etc/skel/.tmux.conf"
@@ -2881,14 +3715,10 @@ set splitright
 highlight ColorColumn ctermbg=darkgrey guibg=grey
 highlight ExtraWhitespace ctermbg=red guibg=red
 match ExtraWhitespace /\s\+$/
-
-" airline + friends (installed into pack/plugins/start)
 let g:airline_powerline_fonts = 1
 let g:airline_theme = 'custom'
 let g:airline#extensions#tabline#enabled = 1
 let g:airline_section_z = '%l:%c'
-
-" ctrlp/fugitive/gitgutter
 let g:ctrlp_map = '<c-p>'
 let g:ctrlp_cmd = 'CtrlP'
 nmap <leader>gs :Gstatus<CR>
@@ -2896,10 +3726,12 @@ nmap <leader>gd :Gdiff<CR>
 nmap <leader>gc :Gcommit<CR>
 nmap <leader>gb :Gblame<CR>
 let g:gitgutter_enabled = 1
-
-" filetype tweaks are provided in ~/.vim/after/ftplugin/*.vim
-
-" cursor shape (xterm-like)
+autocmd FileType python,yaml setlocal tabstop=2 shiftwidth=2 expandtab
+autocmd FileType javascript,typescript,json setlocal tabstop=2 shiftwidth=2 expandtab
+autocmd FileType sh,bash,zsh setlocal tabstop=2 shiftwidth=2 expandtab
+nnoremap <leader>w :w<CR>
+nnoremap <leader>q :q<CR>
+nnoremap <leader>tw :%s/\s\+$//e<CR>
 if &term =~ 'xterm'
   let &t_SI = "\e[6 q"
   let &t_EI = "\e[2 q"
@@ -2922,11 +3754,11 @@ let s:R1 = [ '#000000' , '#ff5f00' , 0 , 202 ]
 let s:R2 = [ '#ffffff' , '#d75f00' , 255 , 166 ]
 let s:R3 = [ '#ffffff' , '#303030' , 255 , 236 ]
 let s:IA = [ '#aaaaaa' , '#1c1c1c' , 250 , 234 ]
-let g:airline#themes#custom#palette.normal  = airline#themes#generate_color_map(s:N1, s:N2, s:N3)
-let g:airline#themes#custom#palette.insert  = airline#themes#generate_color_map(s:I1, s:I2, s:I3)
-let g:airline#themes#custom#palette.visual  = airline#themes#generate_color_map(s:V1, s:V2, s:V3)
+let g:airline#themes#custom#palette.normal = airline#themes#generate_color_map(s:N1, s:N2, s:N3)
+let g:airline#themes#custom#palette.insert = airline#themes#generate_color_map(s:I1, s:I2, s:I3)
+let g:airline#themes#custom#palette.visual = airline#themes#generate_color_map(s:V1, s:V2, s:V3)
 let g:airline#themes#custom#palette.replace = airline#themes#generate_color_map(s:R1, s:R2, s:R3)
-let g:airline#themes#custom#palette.inactive= airline#themes#generate_color_map(s:IA, s:IA, s:IA)
+let g:airline#themes#custom#palette.inactive = airline#themes#generate_color_map(s:IA, s:IA, s:IA)
 EOF
 
   mkdir -p /root/.vim/autoload/airline/themes
@@ -2992,183 +3824,405 @@ sync_skel_to_existing_users() {
       fi
     done
   done
+}
 
   log "Seeding finish-cluster script and systemd unit on Salt master"
 
-}
   # -------------------------------------------------------------------------
   # /usr/local/sbin/finish-cluster: full cluster bring-up via Salt + kubeadm
   # -------------------------------------------------------------------------
+
   cat >/usr/local/sbin/finish-cluster <<'EOF_FINISH_CLUSTER'
 #!/usr/bin/env bash
 set -euo pipefail
+
 log() {
-  echo "[finish-cluster] $*"
+  echo "[finish-cluster] $(date '+%Y-%m-%d %H:%M:%S') - $*"
+}
+
+die() {
+  log "ERROR: $*"
+  exit 1
 }
 
 # ---------------------------------------------------------------------------
-# Expected minions (these IDs must match your Salt minion IDs exactly)
+# Cluster topology
+#   - NODES: list of Salt minion IDs
+#   - ROLE_MAP: optional role labels; can be used later for Salt states
 # ---------------------------------------------------------------------------
 NODES=(
   grafana.unixbox.net
   prometheus.unixbox.net
+  k8s.unixbox.net
   storage.unixbox.net
-  k8s-lb1.unixbox.net
-  k8s-lb2.unixbox.net
-  k8s-cp1.unixbox.net
-  k8s-cp2.unixbox.net
-  k8s-cp3.unixbox.net
-  k8s-w1.unixbox.net
-  k8s-w2.unixbox.net
-  k8s-w3.unixbox.net
+)
+
+declare -A ROLE_MAP=(
+  [grafana.unixbox.net]="graf"
+  [prometheus.unixbox.net]="prom"
+  [k8s.unixbox.net]="k8s"
+  [storage.unixbox.net]="storage"
 )
 
 # ---------------------------------------------------------------------------
-# 1) Wait for all minion keys to exist, then accept them
+# Helper: ensure Salt is reachable
 # ---------------------------------------------------------------------------
-log "Waiting for all minion keys to appear in salt-key -L"
-
-for attempt in $(seq 1 60); do
-  KEYS="$(salt-key -L --out=txt 2>/dev/null || true)"
-
-  missing=0
-  for id in "${NODES[@]}"; do
-    if ! grep -q "$id" <<<"$KEYS"; then
-      missing=1
-      log "  -> still waiting for key: $id"
-    fi
-  done
-
-  if [ "$missing" -eq 0 ]; then
-    log "All expected minion keys present"
-    break
+check_salt_master() {
+  if ! command -v salt >/dev/null 2>&1; then
+    die "salt command not found on master; is Salt installed?"
   fi
-
-  log "Not all keys present yet (attempt $attempt), retrying in 5s..."
-  sleep 5
-done
-
-log "Accepting all pending Salt keys"
-salt-key -A -y || log "salt-key -A -y returned non-zero (may already be accepted)"
-
-# ---------------------------------------------------------------------------
-# 2) Assign role grains to each node
-# ---------------------------------------------------------------------------
-log "Setting role grains on all nodes"
-
-# Monitoring / infra
-salt 'grafana.unixbox.net' grains.setval role graf       || true
-salt 'prometheus.unixbox.net' grains.setval role prometheus || true
-salt 'storage.unixbox.net' grains.setval role storage    || true
-
-# K8s load balancers (HAProxy)
-salt 'k8s-lb1.unixbox.net' grains.setval role k8s-lb || true
-salt 'k8s-lb2.unixbox.net' grains.setval role k8s-lb || true
-
-# K8s control planes
-salt 'k8s-cp1.unixbox.net' grains.setval role k8s-cp || true
-salt 'k8s-cp2.unixbox.net' grains.setval role k8s-cp || true
-salt 'k8s-cp3.unixbox.net' grains.setval role k8s-cp || true
-
-# K8s workers
-salt 'k8s-w1.unixbox.net' grains.setval role k8s-worker || true
-salt 'k8s-w2.unixbox.net' grains.setval role k8s-worker || true
-salt 'k8s-w3.unixbox.net' grains.setval role k8s-worker || true
-
-log "Refreshing grains everywhere"
-salt '*' saltutil.sync_grains || true
-salt '*' saltutil.refresh_grains || true
-
-# ---------------------------------------------------------------------------
-# 3) Apply baseline + role states
-# ---------------------------------------------------------------------------
-log "Applying common baseline to all nodes"
-salt '*' state.apply common.baseline || true
-
-log "Applying K8s load balancer role to LB nodes"
-salt -G 'role:k8s-lb' state.apply roles.k8s_lb || true
-
-log "Applying K8s control-plane prereqs to control-plane nodes"
-salt -G 'role:k8s-cp' state.apply roles.k8s_control_plane || true
-
-log "Applying K8s worker prereqs to worker nodes"
-salt -G 'role:k8s-worker' state.apply roles.k8s_worker || true
-
-log "Sleeping 10s to let containerd/kubelet settle"
-sleep 10
-
-# ---------------------------------------------------------------------------
-# 4) kubeadm init on k8s-cp1
-# ---------------------------------------------------------------------------
-log "Running kubeadm init on k8s-cp1 if not already initialized"
-
-salt 'k8s-cp1.unixbox.net' cmd.run '
-  set -e
-  if [ -f /etc/kubernetes/admin.conf ]; then
-    echo "kubeadm already initialized, skipping"
-    exit 0
+  if ! systemctl is-active --quiet salt-master; then
+    die "salt-master service is not active"
   fi
-
-  kubeadm init \
-    --apiserver-advertise-address=10.100.10.219 \
-    --control-plane-endpoint=10.100.10.213:6443 \
-    --pod-network-cidr=10.244.0.0/16
-' || {
-  log "ERROR: kubeadm init on k8s-cp1 failed"
-  exit 1
 }
 
 # ---------------------------------------------------------------------------
-# 6) Generate join command and join all workers
+# Phase 0: ensure local ansible user + key + config on the master
 # ---------------------------------------------------------------------------
-log "Generating kubeadm join command on k8s-cp1"
+ensure_local_ansible_user() {
+  log "Ensuring local ansible user exists on master"
 
-JOIN_CMD="$(
-  salt 'k8s-cp1.unixbox.net' cmd.run 'kubeadm token create --print-join-command' --out=txt \
-    | sed -n 's/^[^:]*:[[:space:]]*//p' \
-    | head -n1
-)"
+  if ! id ansible >/dev/null 2>&1; then
+    log "Creating ansible user (shell /bin/bash, group sudo)"
+    useradd -m -s /bin/bash -G sudo ansible
+  fi
 
-if [ -z "$JOIN_CMD" ]; then
-  log "ERROR: Could not obtain kubeadm join command from k8s-cp1"
-  exit 1
+  # sudoers
+  if [[ ! -f /etc/sudoers.d/ansible ]]; then
+    log "Seeding /etc/sudoers.d/ansible (NOPASSWD)"
+    echo 'ansible ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/ansible
+    chmod 440 /etc/sudoers.d/ansible
+  fi
+
+  # SSH keypair
+  local ssh_dir="/home/ansible/.ssh"
+  if [[ ! -d "$ssh_dir" ]]; then
+    log "Creating $ssh_dir"
+    mkdir -p "$ssh_dir"
+    chown ansible:ansible "$ssh_dir"
+    chmod 700 "$ssh_dir"
+  fi
+
+  if [[ ! -f "$ssh_dir/id_ed25519" ]]; then
+    log "Generating ansible SSH keypair"
+    sudo -u ansible ssh-keygen -t ed25519 -N '' -f "$ssh_dir/id_ed25519"
+  fi
+
+  # Ansible config
+  mkdir -p /etc/ansible
+
+  cat >/etc/ansible/ansible.cfg <<'EOF_CFG'
+[defaults]
+inventory = /etc/ansible/hosts
+host_key_checking = False
+forks = 50
+timeout = 30
+remote_user = ansible
+EOF_CFG
+
+  touch /etc/ansible/hosts
+  chmod 644 /etc/ansible/hosts
+}
+
+get_ansible_pubkey() {
+  sudo -u ansible cat /home/ansible/.ssh/id_ed25519.pub
+}
+
+# ---------------------------------------------------------------------------
+# Phase 1: wait for Salt minion keys + ping
+# ---------------------------------------------------------------------------
+wait_for_minion() {
+  local node="$1"
+  local max_wait="${2:-360}"   # seconds
+
+  log "Waiting for Salt minion key: $node"
+
+  local waited=0
+  while (( waited < max_wait )); do
+    if salt-key -L | grep -qE "Accepted Keys:\s*(.|\n)*\b${node}\b"; then
+      log "Key for ${node} is accepted"
+      break
+    fi
+    if salt-key -L | grep -qE "Unaccepted Keys:\s*(.|\n)*\b${node}\b"; then
+      log "Key for ${node} is unaccepted; accepting"
+      salt-key -y -a "$node" >/dev/null 2>&1 || true
+    fi
+    sleep 5
+    (( waited += 5 ))
+  done
+
+  if ! salt-key -L | grep -qE "Accepted Keys:\s*(.|\n)*\b${node}\b"; then
+    die "Salt key for ${node} was not accepted within ${max_wait}s"
+  fi
+
+  log "Waiting for $node to respond to salt test.ping"
+  waited=0
+  while (( waited < max_wait )); do
+    if salt "$node" test.ping | grep -q 'True'; then
+      log "$node is up (test.ping True)"
+      return 0
+    fi
+    sleep 5
+    (( waited += 5 ))
+  done
+
+  die "Salt minion ${node} did not respond to test.ping within ${max_wait}s"
+}
+
+# ---------------------------------------------------------------------------
+# Phase 2: ensure common.baseline on all nodes (idempotent)
+# ---------------------------------------------------------------------------
+apply_common_baseline() {
+  local node="$1"
+  log "Applying common.baseline to $node"
+  salt "$node" state.apply common.baseline || die "common.baseline failed on $node"
+}
+
+# ---------------------------------------------------------------------------
+# Phase 3: ensure remote ansible user + sudo + authorized_keys on minions
+# ---------------------------------------------------------------------------
+ensure_ansible_access() {
+  local id="$1"       # FQDN of node
+  local wg_ip="$2"    # WireGuard IP we discovered earlier (10.78.0.x)
+
+  log "[finish-cluster] $(date '+%F %T') - finish-cluster Ensuring ansible user + pubkey + inventory for ${id}"
+
+  # 1) Get ansible pubkey from master
+  local ANSIBLE_PUB
+  if ! ANSIBLE_PUB="$(sudo -u ansible cat /home/ansible/.ssh/id_ed25519.pub 2>/dev/null)"; then
+    log "[finish-cluster] $(date '+%F %T') - ERROR: ansible pubkey not found on master; did you create /home/ansible/.ssh/id_ed25519?"
+    return 1
+  fi
+
+  # 2) Create ansible user + SSH keys + sudo on the minion via Salt
+  salt --no-color "${id}" cmd.run \
+"set -e
+if ! id ansible >/dev/null 2>&1; then
+  useradd -m -s /bin/bash ansible || true
+  usermod -aG sudo ansible || true
 fi
+mkdir -p /home/ansible/.ssh
+chmod 700 /home/ansible/.ssh
+if ! grep -qF '${ANSIBLE_PUB}' /home/ansible/.ssh/authorized_keys 2>/dev/null; then
+  echo '${ANSIBLE_PUB}' >> /home/ansible/.ssh/authorized_keys
+fi
+chown -R ansible:ansible /home/ansible/.ssh
+chmod 600 /home/ansible/.ssh/authorized_keys
+echo 'ansible ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/90-ansible
+chmod 440 /etc/sudoers.d/90-ansible" \
+  >/dev/null 2>&1
 
-log "Join command: $JOIN_CMD"
+  if [ $? -ne 0 ]; then
+    log "[finish-cluster] $(date '+%F %T') - WARN: Failed to push ansible user/key/sudo to ${id} via Salt"
+    return 1
+  fi
 
-log "Having K8s worker nodes join the cluster"
-salt -G 'role:k8s-worker' cmd.run "$JOIN_CMD" || true
+  # 3) Update /etc/ansible/hosts on the master with WG IP
+  update_ansible_inventory "${id}" "${wg_ip}"
 
-# Optional: join cp2/cp3 as workers for now (commented out)
-# log "Having k8s-cp2 and k8s-cp3 join as workers (optional)"
-# salt 'k8s-cp2.unixbox.net,k8s-cp3.unixbox.net' cmd.run "$JOIN_CMD" || true
+  # 4) Prime SSH known_hosts and verify login as ansible
+  log "[finish-cluster] $(date '+%F %T') - finish-cluster Testing ansible SSH to ${id}"
+  if ! sudo -u ansible ssh -o StrictHostKeyChecking=no "${id}" 'hostname && id' >/dev/null 2>&1; then
+    log "[finish-cluster] $(date '+%F %T') - WARN: ansible SSH test failed for ${id}"
+    return 1
+  fi
 
-log "Waiting 30s for nodes to register with the API server"
-sleep 30
+  # 5) Optional: ansible ping check
+  log "[finish-cluster] $(date '+%F %T') - finish-cluster Testing Ansible ping to ${id}"
+  if ! sudo -u ansible ansible "${id}" -m ping >/dev/null 2>&1; then
+    log "[finish-cluster] $(date '+%F %T') - WARN: ensure_ansible_access failed on ${id} (Ansible ping)"
+    return 1
+  fi
 
-log "Cluster nodes from k8s-cp1:"
-salt 'k8s-cp1.unixbox.net' cmd.run '
-  export KUBECONFIG=/etc/kubernetes/admin.conf
-  kubectl get nodes -o wide
-' || true
+  log "[finish-cluster] $(date '+%F %T') - finish-cluster Ansible access OK for ${id}"
+  return 0
+}
 
-log "finish-cluster completed"
+# ---------------------------------------------------------------------------
+# Phase 4: build /etc/ansible/hosts using LAN IPs (10.100.10.x)
+# ---------------------------------------------------------------------------
+discover_lan_ip() {
+  local node="$1"
+  # Prefer 10.100.10.x from grains.ipv4
+  local out
+  out=$(salt "$node" grains.get ipv4 --out txt 2>/dev/null || true)
+  echo "$out" | sed -n 's/.*-\s*\(10\.100\.10\.[0-9]\+\).*/\1/p' | head -n1
+}
+
+ensure_inventory_entry() {
+  local node="$1"
+  local ip="$2"
+
+  [[ -z "$ip" ]] && die "Could not discover LAN IP for $node"
+
+  local hosts_file="/etc/ansible/hosts"
+  local line="${node} ansible_host=${ip}"
+
+  if ! grep -qE "^${node}\b" "$hosts_file"; then
+    log "Adding $node to $hosts_file as ${line}"
+    echo "$line" >>"$hosts_file"
+  else
+    log "$node already present in $hosts_file; not duplicating"
+  fi
+}
+
+# Optional: populate known_hosts for manual SSH use (ansible itself doesn’t need it)
+ensure_known_host() {
+  local node="$1"
+  local ip="$2"
+  local kh="/home/ansible/.ssh/known_hosts"
+
+  mkdir -p "$(dirname "$kh")"
+  touch "$kh"
+  chown ansible:ansible "$kh"
+  chmod 644 "$kh"
+
+  # Avoid duplicates
+  if ! sudo -u ansible ssh-keygen -F "$ip" >/dev/null 2>&1; then
+    log "Adding SSH host key for $node ($ip) to ansible known_hosts"
+    sudo -u ansible ssh-keyscan -H "$ip" >>"$kh" 2>/dev/null || true
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Phase 5: (optional) per-role Salt states
+#   NOTE: roles.prometheus / roles.grafana must be created as states to use.
+# ---------------------------------------------------------------------------
+apply_role_states() {
+  local node="$1"
+  local role="${ROLE_MAP[$node]:-}"
+
+  [[ -z "$role" ]] && {
+    log "No role mapped for $node; skipping role-specific states"
+    return 0
+  }
+
+  case "$role" in
+    k8s)
+      # Example: control plane / worker / flannel, etc.
+      # salt "$node" state.apply roles.k8s_control_plane
+      # salt "$node" state.apply roles.k8s_flannel
+      log "Role 'k8s' for $node – TODO: add concrete Salt states here"
+      ;;
+    prom)
+      # Uncomment once you create roles.prometheus.sls
+      # salt "$node" state.apply roles.prometheus
+      log "Role 'prom' for $node – TODO: add roles.prometheus Salt state"
+      ;;
+    graf)
+      # Uncomment once you create roles.grafana.sls
+      # salt "$node" state.apply roles.grafana
+      log "Role 'graf' for $node – TODO: add roles.grafana Salt state"
+      ;;
+    storage)
+      log "Role 'storage' for $node – TODO: add storage Salt states"
+      ;;
+    *)
+      log "Unknown role '$role' for $node – skipping role-specific states"
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Phase 6: verify ansible connectivity
+# ---------------------------------------------------------------------------
+test_ansible_ping() {
+  local node="$1"
+  log "Testing Ansible ping to $node"
+  if ! sudo -u ansible ansible "$node" -m ping >/tmp/ansible-ping-"$node".log 2>&1; then
+    log "WARN: Ansible ping failed for $node; see /tmp/ansible-ping-$node.log"
+    return 1
+  fi
+  log "Ansible ping succeeded for $node"
+}
+# --- Helper: update /etc/ansible/hosts with WG IPs ---
+update_ansible_inventory() {
+  local id="$1"     # e.g. prometheus.unixbox.net
+  local wg_ip="$2"  # e.g. 10.78.0.2
+
+  local inv="/etc/ansible/hosts"
+
+  mkdir -p /etc/ansible
+  touch "$inv"
+
+  # Add or update the host line (simple static inventory)
+  if grep -qE "^${id}[[:space:]]" "$inv"; then
+    # Update existing line
+    sed -i "s|^${id}.*|${id} ansible_host=${wg_ip}|" "$inv"
+  else
+    echo "${id} ansible_host=${wg_ip}" >> "$inv"
+  fi
+
+  # Minimal group support for monitoring (prom + graf)
+  case "$id" in
+    prometheus.unixbox.net|grafana.unixbox.net)
+      if ! grep -q "^\[monitoring\]" "$inv"; then
+        printf "\n[monitoring]\n" >> "$inv"
+      fi
+      if ! awk -v h="$id" '
+        BEGIN{in_group=0; found=0}
+        /^\[monitoring\]/{in_group=1; next}
+        /^\[/{in_group=0}
+        in_group && $1==h{found=1}
+        END{exit(found?0:1)}
+      ' "$inv"; then
+        echo "$id" >> "$inv"
+      fi
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+main() {
+  log "=== finish-cluster starting ==="
+  check_salt_master
+  ensure_local_ansible_user
+  update_ansible_inventory
+
+  local pubkey
+  pubkey="$(get_ansible_pubkey)"
+
+  for node in "${NODES[@]}"; do
+    log "--- Processing node ${node} ---"
+
+    wait_for_minion "$node" 360
+    apply_common_baseline "$node"
+    ensure_ansible_access "$node" "$pubkey"
+
+    local ip
+    ip="$(discover_lan_ip "$node")"
+    ensure_inventory_entry "$node" "$ip"
+    ensure_known_host "$node" "$ip"
+
+    apply_role_states "$node" || true
+    test_ansible_ping "$node" || true
+  done
+
+  log "=== finish-cluster completed successfully ==="
+}
+
+main "$@"
 EOF_FINISH_CLUSTER
-
   chmod +x /usr/local/sbin/finish-cluster
 
   # -------------------------------------------------------------------------
   # Systemd unit to run finish-cluster once on first boot
   # -------------------------------------------------------------------------
+
   cat >/etc/systemd/system/finish-cluster.service <<'EOF_FINISH_CLUSTER_UNIT'
 [Unit]
 Description=Finalize K8s cluster via Salt and kubeadm
 After=network-online.target salt-master.service
-Wants=network-online.target
+Wants=network-online.target salt-master.service
 
 [Service]
-Type=oneshot
+Type=simple
 ExecStart=/usr/local/sbin/finish-cluster
+# We want retries if something transient fails (e.g. minion is still rebooting)
+Restart=on-failure
+RestartSec=60
 
 [Install]
 WantedBy=multi-user.target
@@ -3182,7 +4236,7 @@ EOF_FINISH_CLUSTER_UNIT
     echo "alias finish-cluster='/usr/local/sbin/finish-cluster'" >> /root/.bashrc
   fi
 
-  log "Salt master stack (including finish-cluster) seeded"
+  log "finish-cluster script + service installed on master"
 
 main_master() {
   log "BEGIN postinstall (master control hub)"
@@ -3194,8 +4248,12 @@ main_master() {
   hub_seed
   helper_tools
   salt_master_stack
+telemetry_stack
+  control_stack
+  desktop_gui
   pillars_and_states_seed
   seed_k8s_support_tools
+  install_wg_refresh_tool
   ansible_stack
   semaphore_stack
   configure_salt_master_network
@@ -4180,7 +5238,6 @@ ensure_master_enrollment_seed() {
   local vmid="$1"
   pmx_guest_exec "$vmid" /bin/bash -lc 'set -euo pipefail
 mkdir -p /srv/wg
-# Do not touch /srv/wg/hub.env here – it is generated by postinstall (hub_seed).
 : > /srv/wg/ENROLL_ENABLED'
 }
 
@@ -4253,7 +5310,7 @@ proxmox_cluster() {
 
   pmx_guest_exec "$MASTER_ID" /bin/bash -lc ": >/srv/wg/ENROLL_ENABLED" || \
     sssh "${ADMIN_USER}@${MASTER_LAN}" 'sudo wg-enrollment on || true' || \
-    sssh root@"$MASTER_LAN" 'wg-enrollment on || true' || true
+    sssh "${ADMIN_USER}@${MASTER_LAN}" 'wg-enrollment on || true' || true
 
   deploy_minion_vm "$PROM_ID"  "$PROM_NAME"  "$PROM_IP"  "prom" \
     "$PROM_WG0" "$PROM_WG1" "$PROM_WG2" "$PROM_WG3" \
@@ -4271,12 +5328,12 @@ proxmox_cluster() {
     "$STOR_WG0" "$STOR_WG1" "$STOR_WG2" "$STOR_WG3" \
     "$MINION_MEM" "$MINION_CORES" "$STOR_DISK_GB"
 
-  log "Closing WireGuard enrollment on master..."
-  pmx_guest_exec "$MASTER_ID" /bin/bash -lc "rm -f /srv/wg/ENROLL_ENABLED" || \
-    sssh "${ADMIN_USER}@${MASTER_LAN}" 'sudo wg-enrollment off || true' || \
-    sssh root@"$MASTER_LAN" 'wg-enrollment off || true' || true
+  pmx_wait_qga(){ local id="$1" t="${2:-900}" s=$(date +%s); while :; do pmx "qm agent $id ping >/dev/null 2>&1 || qm guest ping $id >/dev/null 2>&1" && return 0; (( $(date +%s)-s > t )) && return 1; sleep 3; done; }
+  pmx_wait_qga "$MASTER_ID" 900 || warn "master QGA not ready; skipping wg enroll"
+  pmx "qm guest exec $MASTER_ID --output-format json -- /bin/bash -lc '/usr/bin/env IFACES=\"0 1 2 3\" bash /root/wg_cluster_enroll.sh'" \
+    >/dev/null || warn "WireGuard enroll exec failed (see /var/log/wg_cluster_enroll.log inside master)"
 
-  log "Base cluster deployed and enrollment closed."
+  log "Done. Master + minions deployed (LIVE ISO → ZFS root with BE + Sanoid + signed UKI)."
 }
 
 # =============================================================================
@@ -4286,7 +5343,6 @@ proxmox_cluster() {
 proxmox_k8s_ha() {
   log "=== Deploying K8s node VMs (LBs + CPs + workers) with unified pipeline ==="
 
-  # Ensure master is up and hub.env present for wrappers
   pmx "qm start $MASTER_ID" >/dev/null 2>&1 || true
   pmx_wait_for_state "$MASTER_ID" "running" 600
   pmx_wait_qga "$MASTER_ID" 900
@@ -4340,127 +5396,10 @@ proxmox_k8s_ha() {
 
   pmx_guest_exec "$MASTER_ID" /bin/bash -lc "rm -f /srv/wg/ENROLL_ENABLED" || true
 
-  ########################################################################
-  # 1) Run post-deploy K8s apply script on the master (inside the VM)
-  ########################################################################
-  log "=== Running K8s post-deploy apply script on master ==="
-  pmx_guest_exec "$MASTER_ID" /bin/bash -lc '
-    set -euo pipefail
-    APPLY=/srv/apply.py
-    if [ -f "$APPLY" ]; then
-      chmod +x "$APPLY"
-      echo "Executing $APPLY ..."
-      "$APPLY"
-    else
-      echo "WARN: $APPLY not found on master, skipping post-deploy apply." >&2
-    fi
-  '
+  # Finalize: WireGuard + Ansible bootstrap + cluster apply
+  post_rebuild_finalize
 
-  ########################################################################
-  # 2) Ansible: distribute SSH key + write ansible.cfg + inventory on master
-  ########################################################################
-
-  log "=== Preparing Ansible SSH key from master ==="
-
-  local ANS_PUB_LOCAL="$BUILD_ROOT/ansible.id_ed25519.pub"
-  if ! pmx_guest_cat "$MASTER_ID" "/home/ansible/.ssh/id_ed25519.pub" > "${ANS_PUB_LOCAL}.tmp"; then
-    die "Failed to read /home/ansible/.ssh/id_ed25519.pub from master"
-  fi
-  if [[ ! -s "${ANS_PUB_LOCAL}.tmp" ]]; then
-    die "Master Ansible public key is empty or missing"
-  fi
-  mv -f "${ANS_PUB_LOCAL}.tmp" "$ANS_PUB_LOCAL"
-
-  # List of K8s node VMIDs that should trust the ansible user from master
-  local nodes=(
-    "$K8SLB1_ID" "$K8SLB2_ID"
-    "$K8SCP1_ID" "$K8SCP2_ID" "$K8SCP3_ID"
-    "$K8SW1_ID" "$K8SW2_ID" "$K8SW3_ID"
-  )
-
-  log "=== Distributing Ansible SSH key to all K8s nodes ==="
-  for nid in "${nodes[@]}"; do
-    log "Configuring Ansible authorized_keys on VM ID $nid"
-
-    # Prepare ~/.ssh on the guest
-    pmx_guest_exec "$nid" /bin/bash -lc '
-      set -e
-      user=ansible
-      home=$(getent passwd "$user" | cut -d: -f6)
-      mkdir -p "$home/.ssh"
-      chmod 700 "$home/.ssh"
-      touch "$home/.ssh/authorized_keys"
-      chmod 600 "$home/.ssh/authorized_keys"
-    ' || die "Failed to prepare /home/ansible/.ssh on VM $nid"
-
-    # Append master pubkey if not already present
-    pmx_guest_exec "$nid" /bin/bash -lc "
-      set -e
-      user=ansible
-      home=\$(getent passwd \"\$user\" | cut -d: -f6)
-      KEY=\$(cat << 'EOF'
-$(<"$ANS_PUB_LOCAL")
-EOF
-)
-      grep -qxF \"\$KEY\" \"\$home/.ssh/authorized_keys\" 2>/dev/null || echo \"\$KEY\" >> \"\$home/.ssh/authorized_keys\"
-      chown -R \"\$user\":\"\$user\" \"\$home/.ssh\"
-    " || die "Failed to install Ansible pubkey on VM $nid"
-  done
-
-  log "=== Writing /etc/ansible config on master ==="
-
-  # Build the ansible configs on the build host, then send them into the master
-  local ANSIBLE_CFG_CONTENT
-  read -r -d '' ANSIBLE_CFG_CONTENT <<'EOF'
-[defaults]
-inventory = /etc/ansible/hosts
-host_key_checking = False
-deprecation_warnings = False
-retry_files_enabled = False
-remote_user = ansible
-interpreter_python = auto_silent
-
-[ssh_connection]
-pipelining = True
-EOF
-
-  local ANSIBLE_HOSTS_CONTENT
-  read -r -d '' ANSIBLE_HOSTS_CONTENT <<EOF
-[loadbalancers]
-${K8SLB1_NAME}.unixbox.net ansible_host=${K8SLB1_IP}
-${K8SLB2_NAME}.unixbox.net ansible_host=${K8SLB2_IP}
-
-[control_plane]
-${K8SCP1_NAME}.unixbox.net ansible_host=${K8SCP1_IP}
-${K8SCP2_NAME}.unixbox.net ansible_host=${K8SCP2_IP}
-${K8SCP3_NAME}.unixbox.net ansible_host=${K8SCP3_IP}
-
-[workers]
-${K8SW1_NAME}.unixbox.net ansible_host=${K8SW1_IP}
-${K8SW2_NAME}.unixbox.net ansible_host=${K8SW2_IP}
-${K8SW3_NAME}.unixbox.net ansible_host=${K8SW3_IP}
-
-[k8s_cluster:children]
-loadbalancers
-control_plane
-workers
-EOF
-
-  pmx_guest_exec "$MASTER_ID" /bin/bash -lc "
-    set -e
-    mkdir -p /etc/ansible
-    cat > /etc/ansible/ansible.cfg << 'EOF'
-$ANSIBLE_CFG_CONTENT
-EOF
-    cat > /etc/ansible/hosts << 'EOF'
-$ANSIBLE_HOSTS_CONTENT
-EOF
-  " || die "Failed to configure Ansible on master"
-
-  log "K8s node VMs deployed (LBs/CPs/workers) via unified minion pipeline."
-  log "Note: this script only provisions OS + WG + Salt/etc. K8s kubeadm bootstrap can be layered on in a follow-up step."
-  log "==> K8s cluster bootstrap via Salt + kubeadm is complete"
-
+  log "==> K8s cluster bootstrap is complete"
 }
 
 proxmox_all() {
@@ -4470,15 +5409,16 @@ proxmox_all() {
   log "=== Proxmox ALL complete. ==="
 }
 
+# =============================================================================
+# Packer scaffold (optional)
+# =============================================================================
+
 packer_scaffold() {
   require_cmd packer
   mkdir -p "$PACKER_OUT_DIR"
 
-  # Prefer a custom ISO if you have one; otherwise fall back to ISO_ORIG
   local iso="${MASTER_ISO:-${ISO_ORIG:-}}"
-  if [[ -z "${iso:-}" ]]; then
-    die "packer_scaffold: MASTER_ISO or ISO_ORIG must be set to a bootable Debian ISO"
-  fi
+  [[ -n "${iso:-}" ]] || die "packer_scaffold: MASTER_ISO or ISO_ORIG must be set"
 
   log "Emitting Packer QEMU template at: $PACKER_TEMPLATE (iso=$iso)"
 
@@ -4493,8 +5433,8 @@ packer_scaffold() {
     {
       "type": "qemu",
       "name": "foundrybot-qemu",
-      "iso_url": "{{user \\"iso_url\\"}}",
-      "iso_checksum": "{{user \\"iso_checksum\\"}}",
+      "iso_url": "{{user \"iso_url\"}}",
+      "iso_checksum": "{{user \"iso_checksum\"}}",
       "output_directory": "${PACKER_OUT_DIR}/output",
       "shutdown_command": "sudo shutdown -P now",
       "ssh_username": "${ADMIN_USER:-admin}",
@@ -4521,55 +5461,36 @@ packer_scaffold() {
     }
   ],
   "provisioners": [
-    {
-      "type": "shell",
-      "inline": [
-        "echo 'Packer provisioner hook - handoff to foundryBot bootstrap if desired.'"
-      ]
-    }
+    { "type": "shell", "inline": [ "echo 'Packer provisioner hook - handoff to foundryBot bootstrap if desired.'" ] }
   ]
 }
 EOF
 
-  log "Packer scaffold ready. Example:"
-  log "  packer build $PACKER_TEMPLATE"
+  log "Packer scaffold ready."
 }
 
 # =============================================================================
-#  Export VMDK Images
+# Export VMDK (optional)
 # =============================================================================
 
 export_vmdk() {
   require_cmd qemu-img
-
-  if [[ ! -f "$BASE_DISK_IMAGE" ]]; then
-    die "export_vmdk: BASE_DISK_IMAGE='$BASE_DISK_IMAGE' does not exist. Point it at your qcow2/raw image first."
-  fi
-
+  [[ -f "$BASE_DISK_IMAGE" ]] || die "export_vmdk: BASE_DISK_IMAGE not found"
   mkdir -p "$(dirname "$VMDK_OUTPUT")"
-
-  log "Converting $BASE_DISK_IMAGE -> $VMDK_OUTPUT (ESXi-compatible VMDK)"
+  log "Converting $BASE_DISK_IMAGE -> $VMDK_OUTPUT"
   qemu-img convert -O vmdk "$BASE_DISK_IMAGE" "$VMDK_OUTPUT"
-
   log "VMDK export complete: $VMDK_OUTPUT"
 }
 
 # =============================================================================
-# Export Firecracker
+# Firecracker bundle/flow (optional)
 # =============================================================================
 
 firecracker_bundle() {
   mkdir -p "$FC_WORKDIR"
-
-  if [[ ! -f "$FC_ROOTFS_IMG" ]]; then
-    die "firecracker_bundle: FC_ROOTFS_IMG='$FC_ROOTFS_IMG' not found. Point it at your rootfs.ext4."
-  fi
-  if [[ ! -f "$FC_KERNEL" ]]; then
-    die "firecracker_bundle: FC_KERNEL='$FC_KERNEL' not found. Point it at your vmlinux."
-  fi
-  if [[ ! -f "$FC_INITRD" ]]; then
-    die "firecracker_bundle: FC_INITRD='$FC_INITRD' not found. Point it at your initrd.img."
-  fi
+  [[ -f "$FC_ROOTFS_IMG" ]] || die "firecracker_bundle: FC_ROOTFS_IMG missing"
+  [[ -f "$FC_KERNEL"    ]] || die "firecracker_bundle: FC_KERNEL missing"
+  [[ -f "$FC_INITRD"    ]] || die "firecracker_bundle: FC_INITRD missing"
 
   local cfg="$FC_WORKDIR/fc-config.json"
   log "Emitting Firecracker config: $cfg"
@@ -4582,18 +5503,9 @@ firecracker_bundle() {
     "boot_args": "console=ttyS0 reboot=k panic=1 pci=off ip=dhcp"
   },
   "drives": [
-    {
-      "drive_id": "rootfs",
-      "path_on_host": "${FC_ROOTFS_IMG}",
-      "is_root_device": true,
-      "is_read_only": false
-    }
+    { "drive_id": "rootfs", "path_on_host": "${FC_ROOTFS_IMG}", "is_root_device": true, "is_read_only": false }
   ],
-  "machine-config": {
-    "vcpu_count": ${FC_VCPUS},
-    "mem_size_mib": ${FC_MEM_MB},
-    "ht_enabled": false
-  },
+  "machine-config": { "vcpu_count": ${FC_VCPUS}, "mem_size_mib": ${FC_MEM_MB}, "ht_enabled": false },
   "network-interfaces": []
 }
 EOF
@@ -4602,34 +5514,18 @@ EOF
   cat >"$run" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-
 FC_BIN="${FC_BIN:-firecracker}"
 FC_SOCKET="${FC_SOCKET:-/tmp/firecracker.sock}"
-FC_CONFIG="${FC_CONFIG:-'"$cfg"'}"
-
+FC_CONFIG="${FC_CONFIG:-/dev/null}"
 rm -f "$FC_SOCKET"
-
 $FC_BIN --api-sock "$FC_SOCKET" &
 FC_PID=$!
-
-cleanup() {
-  kill "$FC_PID" 2>/dev/null || true
-}
+cleanup() { kill "$FC_PID" 2>/dev/null || true; }
 trap cleanup EXIT
-
-# Basic one-shot config load using the Firecracker API
-curl -sS -X PUT --unix-socket "$FC_SOCKET" -H 'Content-Type: application/json' \
-  -d @"$FC_CONFIG" /machine-config >/dev/null
-
-curl -sS -X PUT --unix-socket "$FC_SOCKET" -H 'Content-Type: application/json' \
-  -d @"$FC_CONFIG" /boot-source >/dev/null
-
-curl -sS -X PUT --unix-socket "$FC_SOCKET" -H 'Content-Type: application/json' \
-  -d @"$FC_CONFIG" /drives/rootfs >/dev/null
-
-curl -sS -X PUT --unix-socket "$FC_SOCKET" -H 'Content-Type: application/json' \
-  -d '{"action_type": "InstanceStart"}' /actions >/dev/null
-
+curl -sS -X PUT --unix-socket "$FC_SOCKET" -H 'Content-Type: application/json' -d @"$FC_CONFIG" /machine-config >/dev/null
+curl -sS -X PUT --unix-socket "$FC_SOCKET" -H 'Content-Type: application/json' -d @"$FC_CONFIG" /boot-source >/dev/null
+curl -sS -X PUT --unix-socket "$FC_SOCKET" -H 'Content-Type: application/json' -d @"$FC_CONFIG" /drives/rootfs >/dev/null
+curl -sS -X PUT --unix-socket "$FC_SOCKET" -H 'Content-Type: application/json' -d '{"action_type": "InstanceStart"}' /actions >/dev/null
 wait "$FC_PID"
 EOF
   chmod +x "$run"
@@ -4645,20 +5541,17 @@ firecracker_flow() {
 }
 
 # =============================================================================
-# AWS Exporters and Images
+# AWS (optional)
 # =============================================================================
 
 aws_bake_ami() {
   require_cmd aws
   require_cmd qemu-img
+  [[ -n "${AWS_S3_BUCKET:-}" ]]   || die "aws_bake_ami: AWS_S3_BUCKET must be set"
+  [[ -n "${AWS_REGION:-}"   ]]   || die "aws_bake_ami: AWS_REGION must be set"
+  [[ -n "${AWS_IMPORT_ROLE:-}" ]]|| die "aws_bake_ami: AWS_IMPORT_ROLE must be set"
 
-  [[ -n "${AWS_S3_BUCKET:-}" ]] || die "aws_bake_ami: AWS_S3_BUCKET must be set"
-  [[ -n "${AWS_REGION:-}" ]]    || die "aws_bake_ami: AWS_REGION must be set"
-  [[ -n "${AWS_IMPORT_ROLE:-}" ]] || die "aws_bake_ami: AWS_IMPORT_ROLE must be set (VM Import role)"
-
-  if [[ ! -f "$BASE_DISK_IMAGE" ]]; then
-    die "aws_bake_ami: BASE_DISK_IMAGE='$BASE_DISK_IMAGE' not found. Point it at your qcow2/raw image."
-  fi
+  [[ -f "$BASE_DISK_IMAGE" ]] || die "aws_bake_ami: BASE_DISK_IMAGE not found"
 
   mkdir -p "$BUILD_ROOT/aws"
   local raw="$BASE_RAW_IMAGE"
@@ -4668,73 +5561,54 @@ aws_bake_ami() {
   qemu-img convert -O raw "$BASE_DISK_IMAGE" "$raw"
 
   log "Uploading raw image to s3://$AWS_S3_BUCKET/$key"
-  aws --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-    s3 cp "$raw" "s3://$AWS_S3_BUCKET/$key"
+  aws --profile "$AWS_PROFILE" --region "$AWS_REGION" s3 cp "$raw" "s3://$AWS_S3_BUCKET/$key"
 
   log "Starting EC2 import-image task"
   local task_id
   task_id=$(aws --profile "$AWS_PROFILE" --region "$AWS_REGION" ec2 import-image \
     --description "foundryBot Debian 13 $AWS_ARCH" \
     --disk-containers "FileFormat=RAW,UserBucket={S3Bucket=$AWS_S3_BUCKET,S3Key=$key}" \
-    --role-name "$AWS_IMPORT_ROLE" \
-    --query 'ImportTaskId' --output text)
+    --role-name "$AWS_IMPORT_ROLE" --query 'ImportTaskId' --output text)
 
   log "Import task: $task_id (polling until completed...)"
-
   local status ami
   while :; do
     sleep 30
     status=$(aws --profile "$AWS_PROFILE" --region "$AWS_REGION" ec2 describe-import-image-tasks \
-      --import-task-ids "$task_id" \
-      --query 'ImportImageTasks[0].Status' --output text)
+      --import-task-ids "$task_id" --query 'ImportImageTasks[0].Status' --output text)
     log "Import status: $status"
     if [[ "$status" == "completed" ]]; then
       ami=$(aws --profile "$AWS_PROFILE" --region "$AWS_REGION" ec2 describe-import-image-tasks \
-        --import-task-ids "$task_id" \
-        --query 'ImportImageTasks[0].ImageId' --output text)
+        --import-task-ids "$task_id" --query 'ImportImageTasks[0].ImageId' --output text)
       break
-    elif [[ "$status" == "deleted" || "$status" == "deleting" || "$status" == "cancelling" ]]; then
+    elif [[ "$status" =~ ^(deleted|deleting|cancelling)$ ]]; then
       die "aws_bake_ami: import task $task_id failed with status=$status"
     fi
   done
 
   log "AMI created: $ami"
-  echo "AWS_AMI_ID=$ami"
-
-  # You can export this to a file for later reuse
   echo "$ami" >"$BUILD_ROOT/aws/last-ami-id"
 }
 
 aws_run_from_ami() {
   require_cmd aws
-
   local ami="${AWS_AMI_ID:-}"
   if [[ -z "$ami" ]] && [[ -f "$BUILD_ROOT/aws/last-ami-id" ]]; then
     ami=$(<"$BUILD_ROOT/aws/last-ami-id")
   fi
-  [[ -n "$ami" ]] || die "aws_run_from_ami: AWS_AMI_ID not set and no last-ami-id file found"
-
+  [[ -n "$ami" ]] || die "aws_run_from_ami: AWS_AMI_ID not set and no last-ami-id found"
   [[ -n "${AWS_SUBNET_ID:-}" ]] || die "aws_run_from_ami: AWS_SUBNET_ID must be set"
   [[ -n "${AWS_SECURITY_GROUP_ID:-}" ]] || die "aws_run_from_ami: AWS_SECURITY_GROUP_ID must be set"
 
   log "Launching $AWS_RUN_COUNT x $AWS_INSTANCE_TYPE in $AWS_REGION from AMI $ami"
-
-  local assoc_flag
-  if [[ "$AWS_ASSOC_PUBLIC_IP" == "true" ]]; then
-    assoc_flag='{"AssociatePublicIpAddress":true}'
-  else
-    assoc_flag='{"AssociatePublicIpAddress":false}'
-  fi
-
   aws --profile "$AWS_PROFILE" --region "$AWS_REGION" ec2 run-instances \
     --image-id "$ami" \
-    --count "$AWS_RUN_COUNT" \
-    --instance-type "$AWS_INSTANCE_TYPE" \
+    --count "${AWS_RUN_COUNT:-1}" \
+    --instance-type "${AWS_INSTANCE_TYPE:-t3.medium}" \
     --key-name "$AWS_KEY_NAME" \
     --subnet-id "$AWS_SUBNET_ID" \
     --security-group-ids "$AWS_SECURITY_GROUP_ID" \
-    --network-interfaces "DeviceIndex=0,SubnetId=$AWS_SUBNET_ID,Groups=[$AWS_SECURITY_GROUP_ID],AssociatePublicIpAddress=${AWS_ASSOC_PUBLIC_IP}" \
-    --tag-specifications "ResourceType=instance,Tags=[{Key=stack,Value=$AWS_TAG_STACK},{Key=role,Value=$AWS_RUN_ROLE}]" \
+    --tag-specifications "ResourceType=instance,Tags=[{Key=stack,Value=${AWS_TAG_STACK:-foundrybot}},{Key=role,Value=${AWS_RUN_ROLE:-generic}}]" \
     --output table
 }
 
@@ -4745,27 +5619,17 @@ aws_run_from_ami() {
 TARGET="${TARGET:-proxmox-all}"
 
 case "$TARGET" in
-  # Existing Proxmox flows
   proxmox-all)        proxmox_all        ;;
   proxmox-cluster)    proxmox_cluster    ;;
   proxmox-k8s-ha)     proxmox_k8s_ha     ;;
-
-  # New image-only / scaffold modes
-  image-only)         image_only ;;           # (optional; you can add this later)
-  packer-scaffold)    packer_scaffold ;;
-
-  # AWS
-  aws-ami|aws_ami)    aws_bake_ami ;;
-  aws-run|aws_run)    aws_run_from_ami ;;
-
-  # Firecracker
+  packer-scaffold)    packer_scaffold    ;;
+  aws-ami|aws_ami)    aws_bake_ami       ;;
+  aws-run|aws_run)    aws_run_from_ami   ;;
   firecracker-bundle) firecracker_bundle ;;
-  firecracker)        firecracker_flow ;;
-
-  # ESXi / VMDK (optional)
-  vmdk-export)        export_vmdk ;;
-
+  firecracker)        firecracker_flow   ;;
+  vmdk-export)        export_vmdk        ;;
   *)
-    die "Unknown TARGET '$TARGET'. Expected: proxmox-all | proxmox-cluster | proxmox-k8s-ha | image-only | packer-scaffold | aws-ami | aws-run | firecracker-bundle | firecracker | vmdk-export"
+    die "Unknown TARGET '$TARGET'. Expected: proxmox-all | proxmox-cluster | proxmox-k8s-ha | packer-scaffold | aws-ami | aws-run | firecracker-bundle | firecracker | vmdk-export"
     ;;
 esac
+
