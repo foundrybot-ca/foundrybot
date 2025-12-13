@@ -207,7 +207,7 @@ NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3 1.1.1.1}"
 
 PROM_ID="${PROM_ID:-2001}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
 GRAF_ID="${GRAF_ID:-2002}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
-K8S_ID="${K8S_ID:-2003}";  K8S_NAME="${K8S_NAME:-k8s}";          K8S_IP="${K8S_IP:-10.100.10.221}"
+K8S_ID="${K8S_ID:-2003}";  K8S_NAME="${K8S_NAME:-etcd-1}";          K8S_IP="${K8S_IP:-10.100.10.221}"
 STOR_ID="${STOR_ID:-2004}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
 
 # =============================================================================
@@ -245,8 +245,8 @@ STOR_WG0="${STOR_WG0:-10.77.0.5/32}"; STOR_WG1="${STOR_WG1:-10.78.0.5/32}"; STOR
 # =============================================================================
 # IDs/IPs assume a contiguous /24; adjust to match your LAN.
 
-K8SLB1_ID="${K8SLB1_ID:-2005}"; K8SLB1_NAME="${K8SLB1_NAME:-k8s-lb1}"; K8SLB1_IP="${K8SLB1_IP:-10.100.10.213}"
-K8SLB2_ID="${K8SLB2_ID:-2006}"; K8SLB2_NAME="${K8SLB2_NAME:-k8s-lb2}"; K8SLB2_IP="${K8SLB2_IP:-10.100.10.212}"
+K8SLB1_ID="${K8SLB1_ID:-2005}"; K8SLB1_NAME="${K8SLB1_NAME:-etcd-2}"; K8SLB1_IP="${K8SLB1_IP:-10.100.10.213}"
+K8SLB2_ID="${K8SLB2_ID:-2006}"; K8SLB2_NAME="${K8SLB2_NAME:-etcd-3}"; K8SLB2_IP="${K8SLB2_IP:-10.100.10.212}"
 
 K8SCP1_ID="${K8SCP1_ID:-2007}"; K8SCP1_NAME="${K8SCP1_NAME:-k8s-cp1}"; K8SCP1_IP="${K8SCP1_IP:-10.100.10.219}"
 K8SCP2_ID="${K8SCP2_ID:-2008}"; K8SCP2_NAME="${K8SCP2_NAME:-k8s-cp2}"; K8SCP2_IP="${K8SCP2_IP:-10.100.10.218}"
