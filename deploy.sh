@@ -5507,7 +5507,7 @@ firecracker_bundle() {
   local cfg="$FC_WORKDIR/fc-config.json"
   log "Emitting Firecracker config: $cfg"
 
-  cat >"$cfg" <<EOF
+  cat >"$cfg" <<'EOF'
 {
   "boot-source": {
     "kernel_image_path": "${FC_KERNEL}",
