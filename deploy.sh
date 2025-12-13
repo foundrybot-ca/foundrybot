@@ -207,8 +207,8 @@ NAMESERVER="${NAMESERVER:-10.100.10.2 10.100.10.3 1.1.1.1}"
 
 PROM_ID="${PROM_ID:-2001}"; PROM_NAME="${PROM_NAME:-prometheus}"; PROM_IP="${PROM_IP:-10.100.10.223}"
 GRAF_ID="${GRAF_ID:-2002}"; GRAF_NAME="${GRAF_NAME:-grafana}";   GRAF_IP="${GRAF_IP:-10.100.10.222}"
-K8S_ID="${K8S_ID:-2003}";  K8S_NAME="${K8S_NAME:-etcd-1}";          K8S_IP="${K8S_IP:-10.100.10.221}"
-STOR_ID="${STOR_ID:-2004}"; STOR_NAME="${STOR_NAME:-storage}";   STOR_IP="${STOR_IP:-10.100.10.220}"
+K8S_ID="${K8S_ID:-2003}";  K8S_NAME="${K8S_NAME:-storage}";          K8S_IP="${K8S_IP:-10.100.10.221}"
+STOR_ID="${STOR_ID:-2004}"; STOR_NAME="${STOR_NAME:-etcd-1}";   STOR_IP="${STOR_IP:-10.100.10.220}"
 
 # =============================================================================
 # WireGuard hub addresses (planes / fabrics)
