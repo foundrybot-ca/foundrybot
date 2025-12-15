@@ -1,5 +1,5 @@
 ## Ansible cluster installer
-
+```bash
 cd /srv/ansible
 export ANSIBLE_CONFIG=/srv/ansible/ansible.cfg
 
@@ -15,3 +15,4 @@ ansible-playbook playbooks/08_cilium.yml
 ansible-playbook playbooks/09_ingress.yml
 ansible-playbook playbooks/10_monitoring.yml
 ansible-playbook playbooks/99_verify.yml
+```
