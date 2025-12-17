@@ -237,13 +237,11 @@ No extra tooling.
 
 ---
 
-## Kubernetes Is an Example, Not the Product
-
-FoundryBot is **not a Kubernetes installer**.
+## FoundryBot is **not a Kubernetes installer**.
 
 It is a **cluster operating system and lifecycle platform**.
 
-Kubernetes is included as a reference workload because it stresses every subsystem simultaneously:
+Kubernetes is included as a reference workload because it makes an **AWESOME** example. 
 - Networking
 - Identity
 - Storage
