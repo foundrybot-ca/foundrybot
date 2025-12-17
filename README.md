@@ -185,18 +185,18 @@ FoundryBot is intentionally split into **two roles**:
 
 - **BUILD** — where the ./deploys.sh is launched and where images are created and repacked
 - **TARGET** what this script should do.
-  #   Typical values (depends on which functions you wire in):
-  #     proxmox-all        - full Proxmox flow (build ISO + master + minions)
-  #     proxmox-cluster    - build & deploy master + core minions
-  #     proxmox-k8s-ha     - build HA K8s layout on Proxmox
-  #     image-only         - build role ISOs only
-  #     export-base-image  - export master disk from Proxmox to qcow2
-  #     vmdk-export        - convert BASE_DISK_IMAGE → VMDK
-  #     aws-ami            - import BASE_DISK_IMAGE into AWS as AMI
-  #     aws-run            - launch EC2 instances from AMI
-  #     firecracker-bundle - emit Firecracker rootfs/kernel/initrd + helpers
-  #     firecracker        - run Firecracker microVMs
-  #     packer-scaffold    - emit Packer QEMU template
+  Typical values (depends on which functions you wire in):
+    - proxmox-all        - full Proxmox flow (build ISO + master + minions)
+    - proxmox-cluster    - build & deploy master + core minions
+    - proxmox-k8s-ha     - build HA K8s layout on Proxmox
+    - image-only         - build role ISOs only
+    - export-base-image  - export master disk from Proxmox to qcow2
+    - vmdk-export        - convert BASE_DISK_IMAGE → VMDK
+    - aws-ami            - import BASE_DISK_IMAGE into AWS as AMI
+    - aws-run            - launch EC2 instances from AMI
+    - firecracker-bundle - emit Firecracker rootfs/kernel/initrd + helpers
+    - firecracker        - run Firecracker microVMs
+    - packer-scaffold    - emit Packer QEMU template
 
 
 This separation is a core design choice and is what enables full reproducibility, offline installs, and “point-and-shoot” deployments.
