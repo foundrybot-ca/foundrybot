@@ -179,6 +179,48 @@ Designed for real-world infrastructure.
 Built to be torn down and rebuilt repeatedly — on purpose.
 
 ---
+## Build & Target Model (Minimal by Design)
+
+FoundryBot is intentionally split into **two roles**:
+
+- **BUILD** — where images are created and repacked
+- **TARGET** — where those images are deployed and executed
+
+This separation is a core design choice and is what enables full reproducibility, offline installs, and “point-and-shoot” deployments.
+
+---
+
+## Build Server (Required)
+
+FoundryBot **requires a build server**.
+
+This machine is responsible for:
+- Repacking installer ISOs from scratch
+- Baking in all configuration, artifacts, and recovery payloads
+- Producing a *final* bootable image (not a layered image)
+
+### Minimal Build Requirements
+
+- **OS:** Linux (Debian/Ubuntu recommended)
+- **Privileges:** root or sudo
+- **CPU/RAM:** modest (4 cores / 8GB is plenty)
+- **Disk:** enough to hold the ISO + baked artifacts
+
+### Required Packages (Minimal)
+
+```bash
+apt install -y \
+  xorriso \
+  rsync \
+  syslinux-utils \
+  isolinux \
+  dosfstools \
+  curl \
+  git \
+  python3 \
+  ca-certificates
+```
 
 **FoundryBot**  
 *Build the world. Every time.*
+
