@@ -180,11 +180,5 @@ Built to be torn down and rebuilt repeatedly — on purpose.
 
 ---
 
-## License
-
-[Choose your license here]
-
----
-
 **FoundryBot**  
 *Build the world. Every time.*
