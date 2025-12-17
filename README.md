@@ -1,6 +1,6 @@
 # FoundryBot
 
-**FoundryBot is a self-deploying cluster operating system.**  
+**FoundryBot is a self-deploying kubernetes cluster operating system.**  
 It turns bare metal (or a hypervisor) into a complete, secure Kubernetes platform in **one operation**.
 
 No hand-built images.  
