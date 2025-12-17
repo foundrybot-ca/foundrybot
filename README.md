@@ -1,10 +1,11 @@
 # FoundryBot
 
 **FoundryBot is an atomic, self-deploying cluster platform.**  
-It turns bare metal, hypervisors, or cloud infrastructure into a **reproducible, secure base platform** in a single convergent operation.
+It manufactures a complete, secure, reproducible infrastructure base from raw hardware, hypervisors, or cloud instances — in **one convergent operation**.
 
 No hand-built images.  
 No snowflake servers.  
+No vendor control planes.  
 No “day-2” glue scripts.
 
 You boot it — **it builds the world**.
@@ -13,17 +14,18 @@ You boot it — **it builds the world**.
 
 ## What FoundryBot Is
 
-FoundryBot is a **Declarative Cluster Lifecycle Platform** designed around a simple but uncompromising idea:
+FoundryBot is a **Declarative Cluster Lifecycle Platform** built around a single, uncompromising premise:
 
-> **Infrastructure should be rebuildable from nothing, anywhere, at any time.**
+> **If infrastructure cannot be rebuilt from nothing, anywhere, at any time, it is already broken.**
 
-FoundryBot produces a **deployable, atomic platform base** — a clean, deterministic foundation that serves as a **blank canvas** for any workload.
+FoundryBot produces a **deployable, atomic platform base** — a clean, deterministic foundation that serves as a **reproducible blank canvas** for any workload.
 
-Deployment and configuration are **intentionally separated**:
-- Deployment manufactures the platform
-- Configuration and workloads are layered on top
+Deployment and configuration are **intentionally and strictly separated**:
 
-This separation is what enables extreme reproducibility, portability, and recovery speed.
+- **Deployment** manufactures the platform
+- **Configuration** is layered on top, disposable by design
+
+This separation is what enables extreme portability, minimal MTTR, and long-term survivability.
 
 ---
 
@@ -31,29 +33,56 @@ This separation is what enables extreme reproducibility, portability, and recove
 
 FoundryBot is **atomic**.
 
-Each build produces a **complete, self-contained platform image** that includes:
+Each build produces a **complete, self-contained platform artifact** that includes:
+
 - Operating system
-- Networking model
-- Identity and trust
+- Kernel configuration
+- Secure networking fabric
+- Identity and trust model
 - Automation backends
 - Storage primitives
-- Observability foundations
-- Recovery artifacts
+- Observability and telemetry
+- Recovery and rebuild artifacts
 
-There are no external dependencies required to “finish” the system after boot.
+There are **zero external dependencies** required to complete the system after boot.
 
 The platform either exists — or it doesn’t.
 
 ---
 
+## Dark-Site & Time-Capsule Safe
+
+FoundryBot is designed to survive **time**, not just outages.
+
+Everything required to rebuild the platform is **baked into the artifact**:
+- All packages
+- All versions
+- All tooling
+- All orchestration logic
+
+No live repositories.  
+No broken mirrors.  
+No abandoned vendors.  
+No silent dependency drift.
+
+> **If your infrastructure explodes five years from now, you can still redeploy it exactly as it was.**
+
+Your **last successful deployment** becomes your **permanent MTTR anchor** — today, tomorrow, and beyond.
+
+Burn it to USB.  
+Store it in a safe.  
+Walk away.
+
+---
+
 ## A Reproducible Blank Canvas
 
-FoundryBot does **not** bake business logic, applications, or environment-specific configuration into the platform.
+FoundryBot does **not** bake business logic, applications, or environment-specific decisions into the platform.
 
 Instead, it delivers:
 - A hardened, minimal attack-surface base
 - A known-good control plane
-- Deterministic behavior across environments
+- Deterministic behavior across all substrates
 
 This makes FoundryBot ideal as:
 - A Kubernetes substrate
@@ -68,185 +97,196 @@ What you build *on top* is your choice.
 
 ## Separation of Deployment and Configuration
 
-This is a core design principle.
+This is not optional. It is foundational.
 
-- **Deployment**  
-  - Manufacturing the platform  
-  - Deterministic  
-  - Immutable  
-  - Repeatable  
+### Deployment
+- Immutable
+- Deterministic
+- Auditable
+- Reproducible
 
-- **Configuration & Workloads**  
-  - Applied after deployment  
-  - Disposable  
-  - Replaceable  
-  - Environment-specific  
+### Configuration & Workloads
+- Disposable
+- Replaceable
+- Environment-specific
+- Drift-resistant
 
-Because of this separation:
-- Rebuilds are trivial
-- Drift is eliminated
-- Recovery does not depend on fragile state
+Rebuilds are mechanical.  
+Recovery is boring.  
+Failure is survivable.
 
 ---
 
-## Why MTTR Matters
+## Unmatched MTTR by Construction
 
-FoundryBot is built for **unmatched Mean Time To Recovery (MTTR)**.
+FoundryBot is designed for **catastrophic scenarios**, not happy paths:
 
-Consider the worst cases:
 - Cloud region loss
 - Ransomware
-- Supply chain compromise
-- Catastrophic operator error
+- Supply-chain compromise
+- Vendor collapse
+- Operator error at scale
 
 With FoundryBot:
 
-> **You don’t repair infrastructure.  
+> **You do not repair infrastructure.  
 > You replace it.**
 
+From total failure to fully operational platform is a **predictable, repeatable process**, measured in minutes — not days.
+
 ---
 
-## Substrate-Agnostic by Default
+## Substrate-Agnostic, Vendor-Free
 
-FoundryBot is designed to be **infrastructure-agnostic**.
+FoundryBot is **intentionally hostile to vendor lock-in**.
 
-If AWS us-east is gone tomorrow:
-- Upload the images to Azure, GCP, or on-prem
+No:
+- HashiCorp control planes
+- SaaS orchestration layers
+- Embedded vendor telemetry
+- Proprietary networking overlays
+
+Instead, FoundryBot produces **golden, agnostic platform images** that you control completely.
+
+If AWS us-east disappears:
+- Upload the same images to Azure, GCP, or on-prem
 - Boot
-- Redeploy
+- Deploy
 
-You get the **same platform**, with the same behavior, security model, and operational characteristics — in under an hour.
+You get the **same platform**, with the same security posture and behavior — every time.
 
-The substrate does not matter.  
-The platform does.
-
----
-
-## Disaster Recovery You Can Actually Trust
-
-FoundryBot radically simplifies disaster recovery:
-
-- Burn a small number of USB keys
-- Store them in a safe or safety deposit box
-- Walk away
-
-No runbooks.  
-No tribal knowledge.  
-No late-night panic.
-
-From catastrophic failure to a fully operational platform is a **predictable, mechanical process**.
+The substrate is interchangeable.  
+The platform is not.
 
 ---
 
-## Sleep-At-Night Infrastructure
+## Secure Networking Without SaaS
 
-FoundryBot exists for one reason:
+All nodes participate in a **WireGuard-based encrypted mesh**:
 
-> **So you never have to wonder if you can rebuild your business.**
+- Kernel-level encryption
+- No flat networks
+- No trust-by-IP
+- No external brokers
 
-No more:
-- “Did we remember to back that up?”
-- “What if this region is gone?”
-- “What if everything is compromised?”
-- “Can we survive this?”
+No Tailscale.  
+No NetBird.  
+No recurring bills.
 
-You already know the answer.
+> **A private, cryptographic network fabric built directly into the platform.**
 
 ---
 
-## FoundryBot Is a Platform — Kubernetes Is an Example
+## Observability Is a First-Class Citizen
+
+FoundryBot treats observability as **infrastructure**, not an add-on.
+
+Included from first boot:
+- eBPF-based kernel introspection
+- Network, syscall, and workload visibility
+- Structured, machine-readable logging
+- Designed for modern metrics and tracing stacks
+
+If something happens, **you can see it**.  
+If it breaks, **you can prove why**.
+
+---
+
+## Storage as Infrastructure
+
+FoundryBot integrates storage as a core platform primitive:
+
+- **OpenZFS**
+  - Integrity-first
+  - Snapshots and rollback
+  - Ideal for system and control-plane state
+
+- **Ceph**
+  - Distributed
+  - Fault-tolerant
+  - Designed for stateful workloads
+
+State is protected, portable, and replaceable — not fragile.
+
+---
+
+## Salt & Ansible as Core Subsystems
+
+FoundryBot uses both — intentionally.
+
+### Salt (Bootstrap & Control)
+- Secure enrollment
+- Fast discovery
+- Reliable execution
+- Cluster-wide coordination
+
+Salt is used where **speed, identity, and orchestration** matter most.
+
+### Ansible (Post-Configuration & Lifecycle)
+- Declarative
+- Idempotent
+- Auditable
+- Familiar
+
+Ansible is **prebuilt into the platform**.  
+Add your playbooks — and they simply appear.
+
+No installers.  
+No agents.  
+No extra tooling.
+
+---
+
+## Kubernetes Is an Example, Not the Product
 
 FoundryBot is **not a Kubernetes installer**.
 
 It is a **cluster operating system and lifecycle platform**.
 
-Kubernetes is included as an **example workload** because it stresses every subsystem at once:
+Kubernetes is included as a reference workload because it stresses every subsystem simultaneously:
 - Networking
 - Identity
 - Storage
 - Automation
 - Observability
 
-If FoundryBot can manufacture a production-grade, HA Kubernetes cluster deterministically, it can manufacture almost anything.
+If FoundryBot can deterministically manufacture a production-grade, HA Kubernetes cluster, it can manufacture almost anything.
 
-The workload is replaceable.  
-The platform is not.
-
----
-
-## Secure Networking by Default
-
-All nodes participate in a **WireGuard-backed encrypted mesh**:
-
-- No exposed internal services
-- No flat networks
-- No trust by IP alone
-
-> **A private, kernel-level network fabric woven directly into the platform.**
+Workloads are replaceable.  
+The platform is permanent.
 
 ---
 
-## Observability from Day Zero
+## Fully Auditable, From the Ground Up
 
-FoundryBot includes observability as part of the platform contract:
+FoundryBot does not download mystery artifacts or apply opaque transformations.
 
-- eBPF-based kernel visibility
-- Low-overhead tracing
-- Structured logging
-- Designed for modern metrics pipelines
+The entire build process is:
+- Transparent
+- Auditable
+- Deterministic
+- À-la-carte
 
-Nothing critical is added later.  
-Visibility exists before failure does.
+It **builds the operating system from the ground up**, assembles only what is required, and delivers a platform that boots **directly into a fully running state**.
 
----
-
-## Storage as Infrastructure
-
-FoundryBot treats storage as a first-class system component.
-
-Supported models include:
-- **OpenZFS** for integrity, snapshots, and rollback
-- **Ceph** for distributed, fault-tolerant storage
-
-State is protected, portable, and replaceable.
-
----
-
-## Build & Target Model
-
-FoundryBot is intentionally split into two roles:
-
-### Build Machine
-- Rebuilds installer ISOs from scratch
-- Bakes all artifacts and recovery payloads
-- Produces final, bootable images
-
-### Target
-- Bare metal
-- Proxmox
-- Cloud (AWS, Azure, etc.)
-- Firecracker microVMs
-
-This separation enables:
-- Offline installs
-- Deterministic rebuilds
-- Point-and-shoot deployments
-- True platform portability
+No post-install tools.  
+No secondary provisioning systems.  
+No hidden steps.
 
 ---
 
 ## Philosophy
 
+- **Platforms are atomic**
 - **Rebuilds are normal**
 - **State is disposable**
-- **Platforms are atomic**
 - **Clusters are the unit of computation**
 - **Security is the default**
 - **Human intervention is a failure mode**
 
 FoundryBot doesn’t manage machines.
 
-It **manufactures platforms**.
+It **manufactures certainty**.
 
 ---
 
@@ -256,9 +296,9 @@ FoundryBot is built by an infrastructure engineer with deep experience across Un
 
 After years of operating real production systems, one truth became unavoidable:
 
-> **Most outages aren’t caused by failure — they’re caused by irreproducibility.**
+> **Most outages are not caused by failure — they are caused by irreproducibility.**
 
-FoundryBot was built so that catastrophic failure becomes just another deployment.
+FoundryBot exists so catastrophic failure becomes just another deployment.
 
 ---
 
@@ -266,7 +306,7 @@ FoundryBot was built so that catastrophic failure becomes just another deploymen
 
 Active development.  
 Designed for real-world infrastructure.  
-Built to be destroyed — and rebuilt — on purpose.
+Built to be destroyed — and rebuilt — forever.
 
 ---
 
