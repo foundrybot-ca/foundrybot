@@ -46,7 +46,7 @@ FoundryBot does not.
 - **FoundryBot**:  
   _“Melt the metal, cast the machine, and bring the entire factory online.”_
 
-The ISO itself is **repacked** with everything it needs — including packages, configuration, and recovery artifacts — and then deployed as a unified system.
+The ISO itself is **repacked** with everything it needs — including packages, configuration, and recovery artifacts — and then deployed as a unified system, Simply add your own artifacts and post installers.
 
 ---
 
