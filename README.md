@@ -183,7 +183,7 @@ Built to be torn down and rebuilt repeatedly — on purpose.
 
 FoundryBot is intentionally split into **two roles**:
 
-- **BUILD** — where the ./deploys.sh is launched and where images are created and repacked
+- **BUILD MACHINE/VM** — where the ./deploys.sh is launched and where images are created and repacked
 - **TARGET** what this script should do.
   Typical values (depends on which functions you wire in):
     - proxmox-all        - full Proxmox flow (build ISO + master + minions)
