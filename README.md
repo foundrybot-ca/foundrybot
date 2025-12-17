@@ -8,7 +8,7 @@ No snowflake servers.
 No vendor control planes.  
 No “day-2” glue scripts.
 
-You boot it — **it builds the world**.
+You boot it — **it builds the world**. 
 
 ---
 
