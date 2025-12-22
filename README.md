@@ -241,7 +241,7 @@ No extra tooling.
 
 It is a **cluster operating system and lifecycle platform**.
 
-Kubernetes is included as a reference workload because it makes an **AWESOME** example. Especially when rebuilding an entire node, or even other remote nodes by adding glue/green "tags". A simple crontab can spawn and entire region, and destroy them all at 5pm.
+Kubernetes is included as a reference workload because it makes an **AWESOME** platfourm example.
 - Networking
 - Identity
 - Storage
