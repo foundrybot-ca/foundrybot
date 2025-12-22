@@ -1,6 +1,6 @@
 # FoundryBot
 
-**FoundryBot is an atomic, self-deploying clustered Kubernetes platform.**  
+**FoundryBot is an atomic, self-deploying clustered platform.**  
 It manufactures a complete, secure, reproducible infrastructure base from raw hardware, hypervisors, or cloud instances — in **one convergent operation**.
 
 No hand-built images.  
