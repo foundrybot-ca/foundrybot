@@ -239,9 +239,9 @@ No extra tooling.
 
 ## FoundryBot is **not a Kubernetes installer**.
 
-It is a **cluster operating system and lifecycle platform** "this Example" Just highlights a taste of what's possible.
+It is a **cluster operating system and lifecycle platform**.
 
-Kubernetes is included as a reference workload because it makes an **AWESOME** example. 
+Kubernetes is included as a reference workload because it makes an **AWESOME** example. Especially when rebuilding an entire node, or even other remote nodes by adding glue/green "tags". A simple crontab can spawn and entire region, and destroy them all at 5pm.
 - Networking
 - Identity
 - Storage
