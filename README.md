@@ -229,7 +229,7 @@ Salt is used where **speed, identity, and orchestration** matter most.
 - Familiar
 
 Ansible is **prebuilt into the platform**.  
-Add your playbooks — and they simply appear.
+Add your playbooks — and they simply appear in /srv/ansible.
 
 No installers.  
 No agents.  
@@ -239,7 +239,7 @@ No extra tooling.
 
 ## FoundryBot is **not a Kubernetes installer**.
 
-It is a **cluster operating system and lifecycle platform**.
+It is a **cluster operating system and lifecycle platform** "this Example" Just highlights a taste of what's possible.
 
 Kubernetes is included as a reference workload because it makes an **AWESOME** example. 
 - Networking
